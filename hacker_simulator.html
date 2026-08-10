@@ -1,0 +1,2247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEON TERMINAL // CTF Simulator</title>
+<style>
+  /* Fully offline: system monospace stack, no external requests */
+  :root {
+    --green: #00ff41;
+    --green-dim: #00cc33;
+    --red: #ff003c;
+    --amber: #ffb000;
+    --cyan: #00e5ff;
+    --bg: #0a0e14;
+    --panel: #0d1117;
+    --panel-light: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --purple: #bc8cff;
+    --pink: #ff7b72;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', 'Courier New', 'DejaVu Sans Mono', 'WenQuanYi Micro Hei Mono', monospace;
+    height: 100vh;
+    overflow: hidden;
+    font-size: 13px;
+  }
+
+  /* ===== BOOT SCREEN ===== */
+  #boot-screen {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #000; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    transition: opacity 1s ease;
+    cursor: pointer;
+  }
+  #boot-screen.fade-out { opacity: 0; pointer-events: none; }
+  .boot-text { color: var(--green); font-size: 14px; line-height: 1.8; text-align: left; max-width: 700px; white-space: pre; }
+  .boot-text .blink { animation: blink 1s infinite; }
+  .boot-progress {
+    width: 400px; max-width: 80vw; height: 3px; background: #1a1a1a;
+    margin-top: 20px; border-radius: 2px; overflow: hidden;
+  }
+  .boot-progress-bar {
+    height: 100%; width: 0%; background: var(--green);
+    transition: width 0.3s ease; box-shadow: 0 0 8px var(--green);
+  }
+  .boot-hint {
+    color: #333; font-size: 11px; margin-top: 16px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes blink { 0%,50%{opacity:1} 51%,100%{opacity:0} }
+
+  /* ===== MAIN LAYOUT ===== */
+  #app { display: none; height: 100vh; grid-template-rows: auto 1fr auto; }
+  #app.ready { display: grid !important; }
+
+  /* TOP BAR */
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+    height: 36px;
+  }
+  .top-bar .left { display: flex; gap: 12px; align-items: center; }
+  .top-bar .right { display: flex; gap: 16px; align-items: center; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .top-bar span { color: var(--text-dim); font-size: 12px; }
+  .top-bar .highlight { color: var(--green); }
+
+  /* MAIN GRID */
+  .main-grid {
+    display: grid; grid-template-columns: 240px 1fr 280px;
+    height: calc(100vh - 36px - 28px); overflow: hidden;
+  }
+
+  /* LEFT PANEL — FILE SYSTEM */
+  .left-panel {
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .panel-header {
+    padding: 8px 12px; font-size: 11px; text-transform: uppercase;
+    color: var(--text-dim); border-bottom: 1px solid var(--border);
+    letter-spacing: 1px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel-header .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .file-tree { padding: 8px 0; overflow-y: auto; flex: 1; }
+  .file-tree .item {
+    padding: 3px 16px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    font-size: 12px; transition: background .15s;
+  }
+  .file-tree .item:hover { background: var(--panel-light); }
+  .file-tree .item.active { background: rgba(0,255,65,.08); color: var(--green); }
+  .file-tree .item .icon { width: 14px; text-align: center; }
+  .file-tree .folder .icon { color: var(--amber); }
+  .file-tree .file .icon { color: var(--text-dim); }
+  .file-tree .nested { padding-left: 28px; }
+
+  /* CENTER — TERMINAL + EDITOR */
+  .center-panel { display: flex; flex-direction: column; overflow: hidden; }
+  .tabs {
+    display: flex; background: var(--panel); border-bottom: 1px solid var(--border);
+    height: 32px; align-items: center; padding: 0 8px; gap: 4px;
+  }
+  .tab {
+    padding: 4px 14px; font-size: 12px; border-radius: 4px 4px 0 0;
+    cursor: pointer; color: var(--text-dim); border: 1px solid transparent;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tab.active { background: var(--bg); color: var(--text); border-color: var(--border); border-bottom-color: var(--bg); }
+  .tab .close { color: var(--text-dim); font-size: 14px; }
+  .tab .close:hover { color: var(--red); }
+
+  /* TERMINAL */
+  .terminal-container {
+    flex: 1; background: var(--bg); overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  #terminal-output {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    scroll-behavior: smooth;
+  }
+  #terminal-output::-webkit-scrollbar { width: 6px; }
+  #terminal-output::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .term-line { line-height: 1.7; word-break: break-all; }
+  .term-line.cmd { color: var(--green); }
+  .term-line.info { color: var(--text); }
+  .term-line.warn { color: var(--amber); }
+  .term-line.err { color: var(--red); }
+  .term-line.success { color: var(--green); }
+  .term-line.dim { color: var(--text-dim); }
+  .term-line.cyan { color: var(--cyan); }
+  .term-line.purple { color: var(--purple); }
+  .term-line.pink { color: var(--pink); }
+
+  .term-input-line {
+    display: flex; align-items: center; gap: 8px; padding: 0 16px 12px;
+  }
+  .prompt { color: var(--green); white-space: nowrap; font-weight: 700; }
+  .prompt .user { color: var(--cyan); }
+  .prompt .at { color: var(--text-dim); }
+  .prompt .host { color: var(--green); }
+  .prompt .path { color: var(--amber); }
+  .prompt .sigil { color: var(--green); }
+  #cmd-input {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--text); font-family: inherit; font-size: 13px; caret-color: var(--green);
+  }
+
+  /* EDITOR VIEW */
+  .editor-view {
+    flex: 1; display: none; flex-direction: column; overflow: hidden;
+  }
+  .editor-toolbar {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    background: var(--panel-light); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim);
+  }
+  .editor-toolbar .lang-tag {
+    padding: 2px 8px; border-radius: 3px; background: rgba(0,229,255,.1);
+    color: var(--cyan); font-size: 11px;
+  }
+  .editor-body {
+    flex: 1; overflow: auto; padding: 12px 16px;
+    font-size: 13px; line-height: 1.8; white-space: pre-wrap;
+  }
+  .editor-body::-webkit-scrollbar { width: 6px; }
+  .editor-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* RIGHT PANEL — MISSIONS + HINTS */
+  .right-panel {
+    background: var(--panel); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .mission-list { padding: 8px 0; overflow-y: auto; flex: 1; }
+  .mission-card {
+    margin: 6px 10px; padding: 10px 12px; border-radius: 6px;
+    background: var(--panel-light); border: 1px solid var(--border);
+    cursor: pointer; transition: all .2s; position: relative;
+  }
+  .mission-card:hover { border-color: var(--green-dim); }
+  .mission-card.active { border-color: var(--green); background: rgba(0,255,65,.03); }
+  .mission-card .mc-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .mission-card .mc-desc { font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+  .mission-card .mc-diff { font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-left: auto; }
+  .mc-diff.easy { background: rgba(0,255,65,.15); color: var(--green); }
+  .mc-diff.medium { background: rgba(255,176,0,.15); color: var(--amber); }
+  .mc-diff.hard { background: rgba(255,0,60,.15); color: var(--red); }
+  .mission-card .mc-status { position: absolute; top: 10px; right: 12px; font-size: 14px; }
+  .mc-status.done { color: var(--green); }
+  .mc-status.locked { color: var(--text-dim); }
+  .mc-status.active-m { color: var(--amber); }
+
+  /* HINT BOX */
+  .hint-box {
+    margin: 8px 10px; padding: 10px 12px; border-radius: 6px;
+    background: rgba(188,140,255,.06); border: 1px solid rgba(188,140,255,.2);
+    font-size: 11px; color: var(--purple); line-height: 1.6;
+  }
+  .hint-box .hb-title { font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .hint-box .hb-body { color: var(--text-dim); }
+
+  /* BOTTOM BAR */
+  .bottom-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 16px; background: var(--panel); border-top: 1px solid var(--border);
+    height: 28px; font-size: 11px; color: var(--text-dim);
+  }
+  .bottom-bar .left-b { display: flex; gap: 16px; }
+  .bottom-bar .right-b { display: flex; gap: 12px; }
+  .bb-item { display: flex; align-items: center; gap: 4px; }
+  .bb-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .bb-dot.green { background: var(--green); }
+  .bb-dot.amber { background: var(--amber); }
+  .bb-dot.red { background: var(--red); }
+
+  /* MODAL */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,.7); backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    width: 500px; max-width: 90vw; overflow: hidden;
+    box-shadow: 0 0 40px rgba(0,255,65,.1);
+  }
+  .modal-header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal-header .title { font-size: 14px; font-weight: 700; color: var(--green); }
+  .modal-body { padding: 16px; font-size: 13px; line-height: 1.7; color: var(--text); }
+  .modal-body pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 10px 12px; margin: 8px 0; overflow-x: auto; font-size: 12px;
+  }
+  .modal-footer { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+  .btn {
+    padding: 6px 16px; border-radius: 4px; font-family: inherit; font-size: 12px;
+    cursor: pointer; border: 1px solid var(--border); background: var(--panel-light);
+    color: var(--text); transition: all .2s;
+  }
+  .btn:hover { border-color: var(--green); color: var(--green); }
+  .btn.primary { background: rgba(0,255,65,.1); border-color: var(--green); color: var(--green); }
+  .btn.primary:hover { background: rgba(0,255,65,.2); }
+
+  /* ASCII ART */
+  .ascii-art { color: var(--green); font-size: 11px; line-height: 1.2; white-space: pre; }
+
+  /* PROGRESS BAR */
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--cyan)); border-radius: 2px; transition: width .5s; }
+
+  /* NOTIFICATION */
+  .notif {
+    position: fixed; top: 50px; right: 20px; z-index: 2000;
+    padding: 12px 20px; border-radius: 6px; font-size: 13px;
+    transform: translateX(120%); transition: transform .4s cubic-bezier(.4,0,.2,1);
+    max-width: 360px;
+  }
+  .notif.show { transform: translateX(0); }
+  .notif.success { background: rgba(0,255,65,.1); border: 1px solid var(--green); color: var(--green); }
+  .notif.error { background: rgba(255,0,60,.1); border: 1px solid var(--red); color: var(--red); }
+  .notif.info { background: rgba(0,229,255,.1); border: 1px solid var(--cyan); color: var(--cyan); }
+
+  /* CODE HIGHLIGHTING in editor */
+  .kw { color: var(--pink); }
+  .str { color: #a5d6ff; }
+  .num { color: var(--amber); }
+  .com { color: #6e7681; }
+  .fn { color: var(--cyan); }
+  .op { color: var(--purple); }
+
+  /* SCENARIO BANNER */
+  .scenario-banner {
+    background: linear-gradient(90deg, rgba(0,255,65,.05), transparent);
+    border-left: 3px solid var(--green);
+    padding: 8px 14px; margin: 8px 0;
+    font-size: 12px; color: var(--text-dim); line-height: 1.6;
+  }
+  .scenario-banner .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 3px;
+    background: rgba(0,255,65,.15); color: var(--green); font-size: 11px;
+    margin-right: 8px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== BOOT SEQUENCE ===== -->
+<div id="boot-screen">
+  <div class="boot-text" id="boot-text"></div>
+  <div class="boot-progress"><div class="boot-progress-bar" id="boot-progress-bar"></div></div>
+  <div class="boot-hint" id="boot-hint">点击或按任意键跳过...</div>
+</div>
+
+<!-- ===== MAIN APP ===== -->
+<div id="app">
+  <!-- TOP BAR -->
+  <div class="top-bar">
+    <div class="left">
+      <span class="status-dot"></span>
+      <span>NEXUS-OS v3.1.7</span>
+      <span style="color:var(--border)">|</span>
+      <span class="highlight" id="top-user">guest@nexus</span>
+    </div>
+    <div class="right">
+      <span id="top-mission">MISSION: --</span>
+      <span style="color:var(--border)">|</span>
+      <span id="top-score">SCORE: 0</span>
+      <span style="color:var(--border)">|</span>
+      <span id="top-time">00:00:00</span>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+    <!-- LEFT: FILE SYSTEM -->
+    <div class="left-panel">
+      <div class="panel-header"><span><span class="dot"></span> EXPLORER</span><span style="cursor:pointer" onclick="toggleHidden()">👁</span></div>
+      <div class="file-tree" id="file-tree"></div>
+    </div>
+
+    <!-- CENTER: TERMINAL + EDITOR -->
+    <div class="center-panel">
+      <div class="tabs" id="tabs">
+        <div class="tab active" data-tab="terminal" onclick="switchTab('terminal')">▮_terminal</div>
+      </div>
+      <div class="terminal-container" id="terminal-container">
+        <div id="terminal-output"></div>
+        <div class="term-input-line">
+          <span class="prompt" id="prompt">
+            <span class="user">guest</span><span class="at">@</span><span class="host">nexus</span><span class="path">:~$</span>
+          </span>
+          <input type="text" id="cmd-input" autocomplete="off" spellcheck="false" autofocus>
+        </div>
+      </div>
+      <div class="editor-view" id="editor-view">
+        <div class="editor-toolbar">
+          <span id="editor-filename">file</span>
+          <span class="lang-tag" id="editor-lang">text</span>
+          <span style="margin-left:auto;cursor:pointer" onclick="closeEditor()">✕ close</span>
+        </div>
+        <div class="editor-body" id="editor-body"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: MISSIONS -->
+    <div class="right-panel">
+      <div class="panel-header"><span><span class="dot"></span> ACTIVE OPERATIONS</span><span id="mission-count">0/0</span></div>
+      <div class="mission-list" id="mission-list"></div>
+      <div class="hint-box" id="hint-box" style="display:none">
+        <div class="hb-title">💡 INTEL</div>
+        <div class="hb-body" id="hint-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM BAR -->
+  <div class="bottom-bar">
+    <div class="left-b">
+      <span class="bb-item"><span class="bb-dot green"></span> link: secure</span>
+      <span class="bb-item"><span class="bb-dot green"></span> enc: AES-256</span>
+      <span class="bb-item"><span class="bb-dot amber"></span> trace: 12%</span>
+    </div>
+    <div class="right-b">
+      <span>RAM: <span id="ram-usage">234</span>MB</span>
+      <span>CPU: <span id="cpu-usage">3</span>%</span>
+      <span>NET: ↑<span id="net-up">0</span> ↓<span id="net-down">0</span> KB/s</span>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="title" id="modal-title">Title</span>
+      <span style="cursor:pointer;color:var(--text-dim)" onclick="closeModal()">✕</span>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<!-- NOTIFICATION -->
+<div class="notif" id="notif"></div>
+
+<script>
+// =====================================================================
+//  GLOBAL ERROR GUARD — never stay on black screen
+// =====================================================================
+window.addEventListener('error', function(e) {
+  console.error('Caught error:', e.error || e.message);
+  const bs = document.getElementById('boot-screen');
+  if (bs) {
+    bs.style.display = 'none';
+    const app = document.getElementById('app');
+    if (app) {
+      app.classList.add('ready');
+      app.style.display = 'grid';
+      const out = document.getElementById('terminal-output');
+      if (out) {
+        out.innerHTML = '<div style="color:#ff003c;padding:10px">⚠ 系统警告: 检测到异常，已启用安全模式</div>' +
+                       '<div style="color:#00ff41;padding:10px">输入 "help" 继续操作</div>';
+      }
+      const term = document.getElementById('terminal-container');
+      if (term) term.style.display = 'flex';
+    }
+  }
+});
+
+// =====================================================================
+//  BOOT SEQUENCE
+// =====================================================================
+const bootLines = [
+  "[    0.000000] Nexus OS booting...",
+  "[    0.183492] CPU: Intel Xeon E5-2699 v4 @ 2.20GHz",
+  "[    0.301847] Memory: 16384MB available",
+  "[    0.452918] Initializing network stack... OK",
+  "[    0.587201] Loading crypto modules... OK",
+  "[    0.712394] Mounting /dev/sda1 on /... OK",
+  "[    0.891234] Starting sshd... OK",
+  "[    1.023481] Establishing secure tunnel... OK",
+  "[    1.156782] Loading user profile: guest... OK",
+  "[    1.298341] Scanning for available operations...",
+  "[    1.487123] WARNING: Unauthorized access detected on subnet 10.0.0.0/24",
+  "[    1.623489] 3 target hosts identified",
+  "[    1.789123] Welcome to NEXUS-OS, guest.",
+  "[    1.790000] Type 'help' to begin.",
+  "[    1.790001] <span class='blink'>▊</span>"
+];
+
+async function runBoot() {
+  const el = document.getElementById('boot-text');
+  const progressBar = document.getElementById('boot-progress-bar');
+  const hint = document.getElementById('boot-hint');
+  let skipped = false;
+
+  // Safety timeout: if anything goes wrong, force-start after 8 seconds
+  const safetyTimer = setTimeout(() => {
+    skipped = true;
+    enterMainApp();
+  }, 8000);
+
+  // Allow user to skip boot with click or key
+  const skipBoot = () => {
+    if (skipped) return;
+    skipped = true;
+    clearTimeout(safetyTimer);
+    enterMainApp();
+  };
+  document.getElementById('boot-screen').addEventListener('click', skipBoot);
+  document.addEventListener('keydown', skipBoot, { once: true });
+
+  for (let i = 0; i < bootLines.length; i++) {
+    if (skipped) break;
+    el.innerHTML += bootLines[i] + '\n';
+    const pct = ((i + 1) / bootLines.length) * 100;
+    if (progressBar) progressBar.style.width = pct + '%';
+    await sleep(60 + Math.random() * 80);
+  }
+
+  if (!skipped) {
+    hint.textContent = '启动完成, 点击进入系统...';
+    hint.style.color = 'var(--green)';
+    progressBar.style.width = '100%';
+    await sleep(500);
+    skipped = true;
+    clearTimeout(safetyTimer);
+    enterMainApp();
+  }
+}
+
+function enterMainApp() {
+  const bs = document.getElementById('boot-screen');
+  bs.classList.add('fade-out');
+  setTimeout(() => {
+    bs.style.display = 'none';
+    const app = document.getElementById('app');
+    app.classList.add('ready');
+    app.style.display = 'grid';
+    app.style.opacity = '1';
+    try {
+      initApp();
+    } catch(e) {
+      console.error('Init error:', e);
+      // Fallback: at least show the app shell
+      document.getElementById('terminal-output').innerHTML =
+        '<div class="term-line err">⚠ 初始化警告: ' + e.message + '</div>' +
+        '<div class="term-line info">输入 "help" 开始。</div>';
+    }
+  }, 800);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// =====================================================================
+//  MISSION DATA — each mission hides CTF knowledge organically
+// =====================================================================
+const MISSIONS = [
+  {
+    id: 'recon-01',
+    title: '01 // 靶场侦察',
+    desc: '扫描目标网络 10.0.0.0/24，识别存活主机与开放端口。情报显示有一台内网服务器藏有重要文件。',
+    diff: 'easy',
+    status: 'active',
+    intel: '提示：现实世界中，nmap 是侦察利器。试试 nmap -sn 做主机发现，nmap -sV 做服务识别。',
+    steps: [
+      { check: (cmd) => /nmap\s+-sn\s+10\.0\.0/.test(cmd), msg: '主机发现完成。发现 3 台存活主机: 10.0.0.12, 10.0.0.45, 10.0.0.100' },
+      { check: (cmd) => /nmap\s+-sV\s+10\.0\.0\.100/.test(cmd), msg: '端口扫描完成。10.0.0.100 开放: 22/tcp(SSH), 80/tcp(HTTP), 3306/tcp(MySQL)' },
+      { check: (cmd) => /nmap\s+-sC\s+10\.0\.0\.100/.test(cmd) || /nmap\s+--script/.test(cmd), msg: '脚本扫描发现: HTTP 目录遍历漏洞 (CVE-2023-XXXXX), SSH 允许密码认证' }
+    ],
+    reward: 100,
+    flags: ['SCAN_COMPLETE']
+  },
+  {
+    id: 'web-01',
+    title: '02 // 网页渗透',
+    desc: '目标 10.0.0.100 运行着一个 Web 应用。找到一个入口点，获取初始访问权限。',
+    diff: 'easy',
+    status: 'locked',
+    intel: '提示：看看页面源码和 HTTP 响应头，开发者有时会留下"彩蛋"。curl -I 可以看响应头，浏览器 F12 看源码。',
+    steps: [
+      { check: (cmd) => /curl\s+-I\s+http:\/\/10\.0\.0\.100/.test(cmd) || /curl.*10\.0\.0\.100/.test(cmd), msg: 'HTTP 响应头中发现: X-Powered-By: PHP/7.4.33\nServer: Apache/2.4.41\nSet-Cookie: PHPSESSID=...\n备注: 页面底部注释 <!-- TODO: remove /backup.zip before deploy -->' },
+      { check: (cmd) => /curl.*10\.0\.0\.100.*backup|wget.*backup|download.*backup/.test(cmd), msg: '下载到 backup.zip，解压后发现: config.php, users.sql, notes.txt' },
+      { check: (cmd) => /cat\s+notes\.txt|read\s+notes\.txt|more\s+notes/.test(cmd), msg: 'notes.txt 内容:\n[管理员说要把默认密码改掉]\n[但开发环境还是 admin:admin123]\n[数据库端口对外暴露了, 记得关]' },
+      { check: (cmd) => /ssh\s+admin@10\.0\.0\.100|login\s+admin/.test(cmd), msg: '使用 admin:admin123 登录成功！获得初始立足点。' }
+    ],
+    reward: 200,
+    flags: ['WEB_FOOTPRINT', 'WEB_ACCESS']
+  },
+  {
+    id: 'crypto-01',
+    title: '03 // 加密拦截',
+    desc: '截获了一段密文 traffic.pcap，目标通信使用了某种编码和加密。还原原始消息。',
+    diff: 'medium',
+    status: 'locked',
+    intel: '提示：CTF 中"加密"往往从最简单的编码开始——Base64、Hex、ROT13 层层嵌套。先用 file 命令看文件类型。',
+    steps: [
+      { check: (cmd) => /file\s+traffic\.pcap|file\s+\/.*traffic/.test(cmd), msg: 'traffic.pcap: pcap capture file, 42 packets' },
+      { check: (cmd) => /strings\s+traffic\.pcap|tshark.*traffic|tcpdump.*traffic/.test(cmd), msg: '从数据包中提取到字符串:\nU2VjcmV0IG1lc3NhZ2U6IEhlbGxvX1dvcmxkCg==\nAnother packet: 48656c6c6f5f435446' },
+      { check: (cmd) => /base64.*decode|echo.*U2Vj|base64\s+-d/.test(cmd), msg: 'Base64 解码: "Secret message: Hello_World"' },
+      { check: (cmd) => /echo.*4865.*|xxd\s+-r|hex.*decode/.test(cmd), msg: 'Hex 解码: "Hello_CTF"\n\n🏁 FLAG 捕获: flag{Hello_CTF_World}' }
+    ],
+    reward: 300,
+    flags: ['CRYPTO_BROKEN']
+  },
+  {
+    id: 'rev-01',
+    title: '04 // 逆向工程',
+    desc: '在服务器上发现了一个神秘二进制文件 /opt/keygen，运行后要求输入序列号。找出正确的密钥。',
+    diff: 'medium',
+    status: 'locked',
+    intel: '提示：不要怕二进制文件。strings 命令可以提取可读字符串，有时flag就明文藏在里面。objdump 看汇编，Ghidra 做反编译。',
+    steps: [
+      { check: (cmd) => /strings\s+\/opt\/keygen|strings.*keygen/.test(cmd), msg: '提取到字符串:\n"Enter serial key:"\n"Access Granted!"\n"Access Denied!"\n"SUPER_SECRET_KEY_2024"\n"TODO: obfuscate this string"' },
+      { check: (cmd) => /objdump.*keygen|gdb.*keygen|radare.*keygen|r2.*keygen/.test(cmd), msg: '反汇编发现:\n  cmp eax, 0x539\n  je  grant_access\n关键比较: 输入与 0x539 (十进制 1337) 比较' },
+      { check: (cmd) => /keygen|run.*keygen|exec.*keygen/.test(cmd) && /1337|SUPER_SECRET/.test(cmd), msg: '输入 "1337" → Access Granted!\n🏁 FLAG 捕获: flag{SUPER_SECRET_KEY_2024}' }
+    ],
+    reward: 350,
+    flags: ['REV_SOLVED']
+  },
+  {
+    id: 'pwn-01',
+    title: '05 // 缓冲区溢出',
+    desc: '目标服务器运行着 /usr/bin/vuln_server，监听 31337 端口。这个程序存在经典的内存破坏漏洞。',
+    diff: 'hard',
+    status: 'locked',
+    intel: '提示：当程序不检查输入长度时，就可能溢出。试试发送超长字符串看会不会崩溃。pwntools 是写 exploit 的好帮手。',
+    steps: [
+      { check: (cmd) => /nc\s+10\.0\.0\.100\s+31337|netcat.*31337|telnet.*31337/.test(cmd), msg: '连接到 vuln_server\n"Welcome! Enter your name:"\n输入测试字符串后程序崩溃 (SIGSEGV)' },
+      { check: (cmd) => /python.*pwntools|python.*struct|python.*pack|cyclic\s+100|pattern_create/.test(cmd), msg: '使用 cyclic pattern 确定偏移量:\n崩溃时 EIP = 0x6161616c ("laaa")\n偏移量 = 140 字节' },
+      { check: (cmd) => /objdump.*vuln_server|nm.*vuln|readelf.*vuln/.test(cmd), msg: '发现函数: win() at 0x08048456\n该函数执行 system("/bin/sh")' },
+      { check: (cmd) => /python.*exploit|python.*payload|\\x56\\x84\\x04\\x08/.test(cmd), msg: '构造 payload: "A"*140 + "\\x56\\x84\\x04\\x08"\n发送后获得 shell!\n🏁 FLAG 捕获: flag{b0ffer_0verfl0w_m4ster}' }
+    ],
+    reward: 500,
+    flags: ['PWN_ROOT']
+  },
+  {
+    id: 'forensics-01',
+    title: '06 // 取证分析',
+    desc: '获取到一个磁盘镜像 disk.img，据信其中包含被删除的敏感文件。恢复它。',
+    diff: 'medium',
+    status: 'locked',
+    intel: '提示：删除文件不等于彻底消失。文件系统只是标记空间为可用。foremost、scalpel、photorec 可以恢复。',
+    steps: [
+      { check: (cmd) => /file\s+disk\.img|fdisk.*disk\.img|mount.*disk/.test(cmd), msg: 'disk.img: DOS/MBR boot sector, ext4 filesystem' },
+      { check: (cmd) => /foremost.*disk|scalpel.*disk|photorec.*disk|extundelete.*disk/.test(cmd), msg: '恢复出 3 个文件:\n- recup_001.jpg (图片)\n- recup_002.pdf (文档)\n- recup_003.txt (文本)' },
+      { check: (cmd) => /cat\s+recup_003\.txt|read\s+recup_003|more\s+recup_003/.test(cmd), msg: 'recup_003.txt 内容:\n"Meeting notes: the password vault is at /var/secret/passwords.kdbx"\n"Master key: k3yboard_c@t"' },
+      { check: (cmd) => /keepass.*passwords|kdbx.*open|john.*kdbx/.test(cmd) || /passwords\.kdbx/.test(cmd), msg: '使用 master key 打开密码库\n🏁 FLAG 捕获: flag{forens1c_m4ster_2024}' }
+    ],
+    reward: 400,
+    flags: ['FORENSIC_GURU']
+  },
+  {
+    id: 'sql-01',
+    title: '07 // SQL注入',
+    desc: '目标登录页面 /login.php 存在SQL注入漏洞。绕过认证获取管理员权限。',
+    diff: 'easy',
+    status: 'locked',
+    intel: '提示：SQL注入的本质是信任了用户输入。试试在用户名里塞入SQL片段，让条件永远为真。',
+    steps: [
+      { check: (cmd) => /curl.*login\.php|curl.*10\.0\.0\.100.*login|wget.*login/.test(cmd), msg: '登录页面源码:\n<form action="auth.php" method="POST">\n<input name="user"> <input name="pass" type="password">\n<!-- debug: SELECT * FROM users WHERE user=... -->' },
+      { check: (cmd) => /admin.*--|admin.*%27|user=admin.*or|sqlmap.*login/.test(cmd), msg: '注入测试:\nuser=admin\'--  → 密码检查被注释掉\n或 user=admin\' OR 1=1--  → 永真条件\n登录成功! 进入管理员面板' },
+      { check: (cmd) => /SELECT.*FROM|union.*select|sqlmap.*--dump/.test(cmd), msg: '进一步注入获取数据库内容:\nusers 表: admin:5f4dcc3b5aa765d61d8327deb882cf99 (MD5)\n明文密码: password\n🏁 FLAG 捕获: flag{sq1_1nj3ct3d}' }
+    ],
+    reward: 250,
+    flags: ['SQL_INJECTOR']
+  },
+  {
+    id: 'stego-01',
+    title: '08 // 隐写术',
+    desc: '情报显示一张图片 cover.png 中隐藏了重要信息。提取它。',
+    diff: 'medium',
+    status: 'locked',
+    intel: '提示：图片中藏数据的方法很多——LSB隐写、文件追加、EXIF信息。先比较原始图和当前图的差异。',
+    steps: [
+      { check: (cmd) => /file\s+cover\.png|identify\s+cover\.png|exiftool\s+cover/.test(cmd), msg: 'cover.png: PNG image, 800x600\nEXIF 中发现异常注释:\n"Key hidden in the least significant bits"\n文件大小异常: 800x600 PNG 应有 ~50KB, 实际 512KB' },
+      { check: (cmd) => /steghide.*cover|zsteg.*cover|stegsolve.*cover|python.*lsb/.test(cmd), msg: 'LSB 隐写检测到数据!\n提取到 hidden.txt' },
+      { check: (cmd) => /cat\s+hidden\.txt|read\s+hidden\.txt/.test(cmd), msg: 'hidden.txt 内容:\n"加密密钥: P@ssw0rd_St3g0_2024"\n"下一步: 用此密钥解密 message.enc"' },
+      { check: (cmd) => /openssl.*decrypt|openssl.*-d.*message|aes.*decrypt.*message/.test(cmd), msg: '解密 message.enc 成功!\n🏁 FLAG 捕获: flag{st3g4n0graphy_pr0}' }
+    ],
+    reward: 350,
+    flags: ['STEGO_EXPERT']
+  },
+  {
+    id: 'priv-01',
+    title: '09 // 权限提升',
+    desc: '你已以普通用户身份登录 10.0.0.100。获取 root 权限。',
+    diff: 'hard',
+    status: 'locked',
+    intel: '提示：权限提升往往利用配置错误。检查 SUID 文件、sudoers 配置、计划任务、可写系统文件。',
+    steps: [
+      { check: (cmd) => /sudo\s+-l|sudoers|cat\s+\/etc\/sudoers/.test(cmd), msg: '当前用户 sudo 权限:\n(ALL) NOPASSWD: /usr/bin/find\n(ALL) NOPASSWD: /usr/bin/vim' },
+      { check: (cmd) => /find.*-exec.*sh|find.*exec.*root|sudo.*find.*exec/.test(cmd), msg: '利用 find 的 -exec 执行 shell:\nsudo find / -exec /bin/sh \\; -quit\n获得 root shell!' },
+      { check: (cmd) => /whoami|id\s+root/.test(cmd) && /root/.test(cmd), msg: 'uid=0(root) gid=0(root)\n读取 /root/root.txt\n🏁 FLAG 捕获: flag{r00t_3qu1v4l3nt}' }
+    ],
+    reward: 450,
+    flags: ['ROOTED']
+  },
+  {
+    id: 'final-01',
+    title: '10 // 终极挑战',
+    desc: '综合所有技能，渗透进核心服务器 10.0.0.12，获取 master.key 文件。',
+    diff: 'hard',
+    status: 'locked',
+    intel: '提示：终极挑战需要串联多种技术。信息收集→漏洞利用→提权→横向移动→数据窃取。每一步都可能是之前学过的。',
+    steps: [
+      { check: (cmd) => /nmap.*10\.0\.0\.12|scan.*10\.0\.0\.12/.test(cmd), msg: '10.0.0.12 开放: 21/tcp(FTP), 22/tcp(SSH), 8080/tcp(HTTP)' },
+      { check: (cmd) => /ftp.*10\.0\.0\.12|anonymous.*ftp/.test(cmd), msg: 'FTP 允许匿名登录!\n下载到: server.key, config_backup.tar.gz' },
+      { check: (cmd) => /tar.*config|extract.*config|cat.*config/.test(cmd), msg: 'config_backup 中包含:\nSSH 私钥 id_rsa\n数据库配置 db.conf (root:Tr0ub4dor&3)' },
+      { check: (cmd) => /ssh.*-i.*id_rsa|ssh.*root@10\.0\.0\.12/.test(cmd), msg: '使用私钥 SSH 登录成功!\n找到 /root/master.key\n🏁 FLAG 捕获: flag{m4st3r_h4ck3r_2024}' }
+    ],
+    reward: 1000,
+    flags: ['MASTER_HACKER']
+  }
+];
+
+// =====================================================================
+//  FILE SYSTEM (virtual)
+// =====================================================================
+const FILESYSTEM = {
+  '/': {
+    type: 'dir', children: ['home', 'opt', 'usr', 'var', 'tmp', 'root']
+  },
+  '/home': {
+    type: 'dir', children: ['guest', 'admin']
+  },
+  '/home/guest': {
+    type: 'dir', children: ['notes.txt', 'tools', 'scans']
+  },
+  '/home/guest/notes.txt': {
+    type: 'file', content: `NEXUS-OS 操作笔记
+==================
+- 系统已连接至目标网络
+- 待办: 扫描子网, 找到入口点
+- 记住: 管理员习惯用弱密码
+- 加密通信端口: 5000/udp
+- 备份文件可能在 /backup 或 .zip 中`
+  },
+  '/home/guest/scans': {
+    type: 'dir', children: ['scan_result.txt']
+  },
+  '/home/guest/scans/scan_result.txt': {
+    type: 'file', content: `初步扫描结果:
+10.0.0.12 - 未知设备 (MAC: 00:11:22:33:44:55)
+10.0.0.45 - 打印机/物联网?
+10.0.0.100 - Web服务器 (重点目标)
+10.0.0.200 - 网关`
+  },
+  '/home/guest/tools': {
+    type: 'dir', children: ['readme.txt']
+  },
+  '/home/guest/tools/readme.txt': {
+    type: 'file', content: `可用工具:
+- nmap (网络扫描)
+- metasploit (渗透框架)
+- john (密码破解)
+- hashcat (GPU破解)
+- burpsuite (Web代理)
+- wireshark (流量分析)
+- ghidra (逆向工程)
+- pwntools (二进制利用)
+
+用法: 直接输入工具名 + 参数`
+  },
+  '/opt': {
+    type: 'dir', children: ['keygen']
+  },
+  '/opt/keygen': {
+    type: 'file', content: `[二进制文件 - 执行 strings keygen 查看可读字符串]`
+  },
+  '/usr': {
+    type: 'dir', children: ['bin', 'share']
+  },
+  '/usr/bin': {
+    type: 'dir', children: ['vuln_server']
+  },
+  '/usr/bin/vuln_server': {
+    type: 'file', content: `[SUID二进制 - 存在缓冲区溢出漏洞 - 监听端口31337]`
+  },
+  '/var': {
+    type: 'dir', children: ['secret', 'log']
+  },
+  '/var/secret': {
+    type: 'dir', children: ['passwords.kdbx']
+  },
+  '/var/secret/passwords.kdbx': {
+    type: 'file', content: `[KeePass 加密数据库 - 需要主密钥]`
+  },
+  '/var/log': {
+    type: 'dir', children: ['auth.log', 'access.log']
+  },
+  '/var/log/auth.log': {
+    type: 'file', content: `Jul 15 08:23:11 sshd[1234]: Failed password for root from 192.168.1.50
+Jul 15 08:23:15 sshd[1235]: Accepted password for admin from 10.0.0.50
+Jul 15 09:01:22 sudo: admin : TTY=pts/0 ; PWD=/home/admin ; USER=root ; COMMAND=/bin/cat /etc/shadow
+Jul 15 10:15:33 sshd[1300]: Accepted key for root from 10.0.0.100`
+  },
+  '/tmp': {
+    type: 'dir', children: ['disk.img', 'traffic.pcap', 'cover.png', 'message.enc']
+  },
+  '/tmp/disk.img': {
+    type: 'file', content: `[磁盘镜像文件 - 包含已删除文件 - 使用foremost恢复]`
+  },
+  '/tmp/traffic.pcap': {
+    type: 'file', content: `[网络抓包文件 - 包含加密通信 - 使用strings或tshark分析]`
+  },
+  '/tmp/cover.png': {
+    type: 'file', content: `[PNG图片 - 内嵌LSB隐写数据 - 使用zsteg或steghide]`
+  },
+  '/tmp/message.enc': {
+    type: 'file', content: `[AES-256加密文件 - 需要密钥 - openssl aes-256-cbc -d]`
+  },
+  '/root': {
+    type: 'dir', children: ['root.txt', 'master.key']
+  },
+  '/root/root.txt': {
+    type: 'file', content: `flag{r00t_3qu1v4l3nt}`
+  },
+  '/root/master.key': {
+    type: 'file', content: `flag{m4st3r_h4ck3r_2024}`
+  }
+};
+
+// =====================================================================
+//  GAME STATE
+// =====================================================================
+let state = {
+  cwd: '/home/guest',
+  user: 'guest',
+  host: 'nexus',
+  score: 0,
+  missions: deepCloneMissions(MISSIONS),
+  completedFlags: new Set(),
+  unlockedMissions: new Set(['recon-01']),
+  currentMission: 'recon-01',
+  stepIndex: {},
+  startTime: Date.now(),
+  hiddenVisible: false,
+  ram: 234,
+  cpu: 3,
+  netUp: 0,
+  netDown: 0
+};
+
+// Deep clone that preserves functions (JSON.stringify strips them)
+function deepCloneMissions(arr) {
+  return arr.map(m => ({
+    ...m,
+    steps: m.steps.map(s => ({ ...s }))
+  }));
+}
+
+MISSIONS.forEach(m => state.stepIndex[m.id] = 0);
+
+// =====================================================================
+//  INIT
+// =====================================================================
+function initApp() {
+  renderFileTree();
+  renderMissions();
+  updateTopBar();
+  startTimer();
+  startSystemMonitor();
+  bindInput();
+  printWelcome();
+}
+
+function printWelcome() {
+  termLine(`<pre class="ascii-art">   ____  ___  ____  ____  ___  _   _ 
+  / ___||   \\|  _ \\|  _ \\|_ _|| \\ | |
+  \\___ \\| |) | |_) | |_) || | |  \\| |
+   ___) |  _ <|  __/|  _ < | | | |\\  |
+  |____/|_| \\_\\_|   |_| \\_\\___||_| \\_|
+                                      
+  NEXUS OPERATIONS TERMINAL v3.1.7
+  =====================================
+  Type 'help' for available commands.
+  Type 'missions' to view operations.
+  </pre>`, 'success');
+  termLine('', 'info');
+  showMissionBrief('recon-01');
+}
+
+// =====================================================================
+//  TERMINAL OUTPUT
+// =====================================================================
+function termLine(html, cls = 'info') {
+  const out = document.getElementById('terminal-output');
+  const div = document.createElement('div');
+  div.className = `term-line ${cls}`;
+  div.innerHTML = html;
+  out.appendChild(div);
+  out.scrollTop = out.scrollHeight;
+}
+
+function termCmdLine(cmd) {
+  const prompt = `<span class="user">${state.user}</span><span class="at">@</span><span class="host">${state.host}</span><span class="path">:${state.cwd}$</span>`;
+  termLine(`${prompt} ${escapeHtml(cmd)}`, 'cmd');
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// =====================================================================
+//  INPUT HANDLING
+// =====================================================================
+function bindInput() {
+  const input = document.getElementById('cmd-input');
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const cmd = input.value.trim();
+      input.value = '';
+      if (cmd) {
+        termCmdLine(cmd);
+        processCommand(cmd);
+      }
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      autoComplete(input);
+    }
+  });
+  // keep focus
+  document.addEventListener('click', () => input.focus());
+}
+
+function autoComplete(input) {
+  const val = input.value;
+  const parts = val.split(' ');
+  const last = parts[parts.length - 1];
+  // simple: complete commands
+  const cmds = ['help','ls','cd','cat','pwd','whoami','id','uname','nmap','curl','wget','ssh','ftp','nc','netcat','ping','traceroute','dig','whois','sqlmap','john','hashcat','hydra','metasploit','msfconsole','burpsuite','wireshark','tshark','foremost','scalpel','photorec','extundelete','steghide','zsteg','stegsolve','openssl','gpg','strings','objdump','nm','readelf','gdb','radare2','r2','ghidra','file','xxd','hexdump','base64','md5sum','sha256sum','sudo','su','find','grep','awk','sed','tar','zip','unzip','mount','umount','ps','top','netstat','ss','iptables','chmod','chown','touch','mkdir','rm','cp','mv','echo','python','python3','ruby','perl','php','gcc','make','git','wget','curl','scp','rsync','kill','killall','systemctl','journalctl','dmesg','lsof','strace','ltrace','checksec','pwntools','cyclic','pattern_create','objdump','readelf','nm','gdb','r2','radare2','binwalk','exiftool','identify','feh','convert','ffmpeg','sox','hexedit','bvi','mc','vim','nano','less','more','head','tail','sort','uniq','cut','paste','join','diff','patch','comm','cmp','wc','tee','xargs','env','export','set','unset','alias','unalias','history','clear','exit','logout','reboot','shutdown','poweroff','init','runlevel','who','w','last','lastlog','finger','write','wall','mesg','talk','ypcat','ypmatch','getent','nslookup','host','route','arp','ifconfig','ip','iwconfig','mtr','tcpdump','ngrep','hping3','ncat','socat','proxychains','tor','torsocks','macchanger','etherape','netdiscover','enum4linux','smbclient','smbmap','rpcclient','impacket','responder','crackmapexec','bloodhound','neo4j','powershell','cmd','wmic','net','sc','tasklist','taskkill','reg','schtasks','at','bcdedit','wevtutil','bitsadmin','certutil','vssadmin','icacls','takeown','netstat','netsh','ipconfig','route','arp','nslookup','tracert','pathping','nbtstat','hostname','whoami','systeminfo','tasklist','driverquery','wmic','sc','reg','schtasks','at','bcdedit','wevtutil','bitsadmin','certutil','vssadmin','icacls','takeown','net','sc','tasklist','taskkill','reg','schtasks','at','bcdedit','wevtutil','bitsadmin','certutil','vssadmin','icacls','takeown'];
+  const matches = cmds.filter(c => c.startsWith(last));
+  if (matches.length === 1) {
+    parts[parts.length - 1] = matches[0];
+    input.value = parts.join(' ');
+  }
+}
+
+// =====================================================================
+//  COMMAND PROCESSOR
+// =====================================================================
+function processCommand(cmd) {
+  const args = cmd.split(/\s+/);
+  const c = args[0].toLowerCase();
+
+  // MISSION PROGRESSION — check all active missions
+  checkMissionProgress(cmd);
+
+  switch(c) {
+    case 'help': cmd_help(); break;
+    case 'ls': cmd_ls(args); break;
+    case 'cd': cmd_cd(args); break;
+    case 'cat': cmd_cat(args); break;
+    case 'pwd': termLine(state.cwd, 'info'); break;
+    case 'whoami': termLine(state.user, 'info'); break;
+    case 'id': termLine(`uid=1000(${state.user}) gid=1000(${state.user}) groups=1000(${state.user})`, 'info'); break;
+    case 'uname': termLine('Linux nexus 5.15.0 #1 SMP x86_64 GNU/Linux', 'info'); break;
+    case 'clear': document.getElementById('terminal-output').innerHTML = ''; break;
+    case 'missions': showMissions(); break;
+    case 'mission': showMissions(); break;
+    case 'intel': showIntel(); break;
+    case 'hint': showIntel(); break;
+    case 'score': termLine(`当前积分: ${state.score}`, 'cyan'); break;
+    case 'flags': termLine(`已捕获Flag: ${[...state.completedFlags].join(', ') || '无'}`, 'purple'); break;
+    case 'nmap': cmd_nmap(args); break;
+    case 'curl': cmd_curl(args); break;
+    case 'wget': cmd_wget(args); break;
+    case 'ssh': cmd_ssh(args); break;
+    case 'ftp': cmd_ftp(args); break;
+    case 'nc': case 'netcat': cmd_nc(args); break;
+    case 'strings': cmd_strings(args); break;
+    case 'file': cmd_file(args); break;
+    case 'base64': cmd_base64(args); break;
+    case 'xxd': cmd_xxd(args); break;
+    case 'hexdump': cmd_hexdump(args); break;
+    case 'objdump': cmd_objdump(args); break;
+    case 'nm': cmd_nm(args); break;
+    case 'readelf': cmd_readelf(args); break;
+    case 'gdb': cmd_gdb(args); break;
+    case 'r2': case 'radare2': cmd_radare(args); break;
+    case 'foremost': cmd_foremost(args); break;
+    case 'scalpel': cmd_scalpel(args); break;
+    case 'photorec': cmd_photorec(args); break;
+    case 'extundelete': cmd_extundelete(args); break;
+    case 'steghide': cmd_steghide(args); break;
+    case 'zsteg': cmd_zsteg(args); break;
+    case 'stegsolve': cmd_stegsolve(args); break;
+    case 'openssl': cmd_openssl(args); break;
+    case 'john': cmd_john(args); break;
+    case 'hashcat': cmd_hashcat(args); break;
+    case 'hydra': cmd_hydra(args); break;
+    case 'sqlmap': cmd_sqlmap(args); break;
+    case 'burpsuite': termLine('启动 Burp Suite (图形界面)...\n代理监听 127.0.0.1:8080', 'cyan'); break;
+    case 'wireshark': case 'tshark': cmd_wireshark(args); break;
+    case 'ghidra': termLine('启动 Ghidra 反编译套件...\n加载 /opt/keygen ...\n反编译完成, 查看 Functions 窗口', 'cyan'); break;
+    case 'metasploit': case 'msfconsole': termLine('msf6 > 已启动\n可用模块: exploit/multi/handler, auxiliary/scanner/...', 'cyan'); break;
+    case 'sudo': cmd_sudo(args); break;
+    case 'su': termLine('密码: ***\nroot@nexus:~#', 'success'); state.user = 'root'; updatePrompt(); break;
+    case 'find': cmd_find(args); break;
+    case 'grep': cmd_grep(args); break;
+    case 'tar': cmd_tar(args); break;
+    case 'zip': case 'unzip': termLine('处理压缩文件...', 'info'); break;
+    case 'mount': termLine('mount: /dev/sdb1 on /mnt type ext4 (rw)', 'info'); break;
+    case 'ps': termLine('  PID TTY     TIME CMD\n  1   ?   00:00:01 systemd\n 42   pts/0 00:00:00 bash\n 1337 pts/0 00:00:00 vuln_server\n 2048 pts/0 00:00:00 sshd', 'info'); break;
+    case 'netstat': case 'ss': termLine('Proto Recv-Q Send-Q Local Address  State\ntcp   0      0 0.0.0.0:22      LISTEN\ntcp   0      0 0.0.0.0:80      LISTEN\ntcp   0      0 0.0.0.0:31337   LISTEN\ntcp   0      0 10.0.0.100:22   ESTABLISHED', 'info'); break;
+    case 'iptables': termLine('Chain INPUT (policy ACCEPT)\ntarget  prot  source     destination\nACCEPT  tcp   --  10.0.0.0/24  anywhere  tcp dpt:22\nDROP    tcp   --  anywhere    anywhere   tcp dpt:23', 'dim'); break;
+    case 'chmod': termLine('权限已更改', 'info'); break;
+    case 'touch': termLine('文件已创建', 'info'); break;
+    case 'mkdir': termLine('目录已创建', 'info'); break;
+    case 'rm': termLine('已删除', 'info'); break;
+    case 'cp': termLine('已复制', 'info'); break;
+    case 'mv': termLine('已移动', 'info'); break;
+    case 'echo': termLine(args.slice(1).join(' ').replace(/"/g,''), 'info'); break;
+    case 'python': case 'python3': cmd_python(args); break;
+    case 'perl': case 'ruby': termLine('(解释器就绪, 输入代码或执行脚本)', 'dim'); break;
+    case 'gcc': termLine('编译完成: a.out', 'info'); break;
+    case 'git': termLine('On branch master\nnothing to commit, working tree clean', 'dim'); break;
+    case 'scp': termLine('传输完成', 'info'); break;
+    case 'rsync': termLine('同步完成', 'info'); break;
+    case 'kill': termLine('进程已终止', 'info'); break;
+    case 'systemctl': termLine('● sshd.service - OpenSSH Server\n   Active: active (running)', 'info'); break;
+    case 'journalctl': termLine('-- Journal begins at ... --\nJul 15 08:23 sshd[1234]: Accepted password for admin', 'dim'); break;
+    case 'dmesg': termLine('[    0.000000] Linux version 5.15.0...', 'dim'); break;
+    case 'lsof': termLine('COMMAND  PID  USER  FD  TYPE  DEVICE  SIZE  NODE NAME\nvuln_ser 1337 root  3u  IPv4  12345  0t0  TCP *:31337 (LISTEN)', 'info'); break;
+    case 'strace': termLine('execve("/opt/keygen", ["keygen"], 0x...)\nopenat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY)\nread(0, "1337\\n", 1024) = 5\nwrite(1, "Access Granted!", 15) = 15', 'dim'); break;
+    case 'ltrace': termLine('__libc_start_main(0x4005b0, 1, 0x7fff...)\nstrcmp("input", "SUPER_SECRET_KEY_2024") = -1\nprintf("Access Denied!\\n") = 16', 'dim'); break;
+    case 'checksec': termLine('[*] /usr/bin/vuln_server\n    Arch:     i386-32-little\n    RELRO:    No RELRO\n    Stack:    No canary found\n    NX:       NX disabled\n    PIE:      No PIE (0x8048000)\n    RWX:      Has RWX segments!', 'warn'); break;
+    case 'cyclic': case 'pattern_create': termLine('生成 200 字节 pattern:\naaabaaacaaadaaaeaaafaaagaaahaaaiaaajaaakaaalaaamaaanaaaoaaapaaaqaaaraaasaaataaauaaavaaawaaaxaaayaaazaabbaabcaabdaabeaabfaabgaabhaabiaabjaabkaablaabmaabnaaboaabpaabqaabraabsaabtaabuaabvaabwaabxaabyaabzaacbaaccaacdaaceaacfaacgaachaaciaacjaackaaclaacmaacnaacoaacpaacqaacraacsaactaacuaacvaacwaacxaacyaaczaadbaadcaaddaadeaadfaadgaadhaadiaadjaadkaadlaadmaadnaadoaadpaadqaadraadsaadtaaduaadvaadwaadxaadyaadzaaebaaecaaedaaeeaaefaaegaaehaaeiaaejaaekaaelaaemaaenaaeoaaepaaeqaaeraaesaaetaaeuaaevaaewaaexaaeyaae', 'dim'); break;
+    case 'binwalk': termLine('DECIMAL    HEX        DESCRIPTION\n0          0x0       PNG image, 800 x 600\n456789     0x6F855    AES-256-CBC encrypted data\n500000     0x7A120    Zlib compressed data', 'info'); break;
+    case 'exiftool': case 'identify': cmd_exiftool(args); break;
+    case 'feh': case 'convert': termLine('图像处理完成', 'info'); break;
+    case 'ffmpeg': termLine('音视频处理完成', 'info'); break;
+    case 'hexedit': case 'bvi': termLine('(十六进制编辑器已打开)', 'dim'); break;
+    case 'mc': termLine('(午夜指挥官文件管理器已打开)', 'dim'); break;
+    case 'vim': case 'nano': case 'less': case 'more': termLine('(文本编辑器/查看器 - 使用 cat 命令查看文件内容)', 'dim'); break;
+    case 'head': case 'tail': termLine('(使用 cat 命令查看文件内容)', 'dim'); break;
+    case 'sort': case 'uniq': case 'cut': case 'paste': case 'wc': termLine('(文本处理工具就绪)', 'dim'); break;
+    case 'tee': case 'xargs': termLine('(管道工具就绪)', 'dim'); break;
+    case 'env': case 'export': termLine('PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/guest\nUSER=guest\nSHELL=/bin/bash', 'dim'); break;
+    case 'alias': termLine('ll=\'ls -la\'\nla=\'ls -A\'', 'dim'); break;
+    case 'history': termLine(' 1  help\n 2  ls\n 3  cat notes.txt\n 4  nmap -sn 10.0.0.0/24\n 5  missions', 'dim'); break;
+    case 'exit': case 'logout': termLine('注销当前会话... (tip: 使用 "su" 切换用户)', 'warn'); break;
+    case 'reboot': case 'shutdown': case 'poweroff': termLine('⚠ 需要 root 权限执行此操作', 'err'); break;
+    case 'init': case 'runlevel': termLine('N 3', 'dim'); break;
+    case 'who': case 'w': termLine('guest  pts/0  2024-07-15 08:00 (10.0.0.50)', 'dim'); break;
+    case 'last': termLine('admin  pts/0  10.0.0.50  Mon Jul 15 08:23  still logged in\nroot   pts/0  10.0.0.100 Mon Jul 15 10:15 - 10:45  (00:30)', 'dim'); break;
+    case 'lastlog': termLine('admin  pts/0  10.0.0.50  Jul 15 08:23:11\nroot   pts/0  10.0.0.100 Jul 15 10:15:22', 'dim'); break;
+    case 'finger': termLine('Login  Name       Tty  Idle  Login Time\nadmin   Admin User  pts/0  .    Jul 15 08:23\nguest   Guest User  pts/1  .    Jul 15 09:00', 'dim'); break;
+    case 'dig': case 'whois': case 'nslookup': case 'host': termLine('; <<>> DiG 9.16.1 <<>>\n;; ANSWER SECTION:\nnexus.local.  300  IN  A  10.0.0.100', 'dim'); break;
+    case 'route': case 'arp': case 'ifconfig': case 'ip': termLine('eth0: flags=4163<UP,BROADCAST,RUNNING>\n  inet 10.0.0.100  netmask 255.255.255.0\n  ether 08:00:27:de:ad:be', 'dim'); break;
+    case 'iwconfig': termLine('no wireless extensions.', 'dim'); break;
+    case 'mtr': case 'traceroute': termLine('1  10.0.0.1  0.5ms\n2  10.0.0.100  1.2ms\n3  * * *', 'dim'); break;
+    case 'tcpdump': case 'ngrep': case 'hping3': termLine('(抓包工具就绪 - 使用 "wireshark" 或 "tshark" 分析流量)', 'dim'); break;
+    case 'ncat': case 'socat': termLine('(高级网络工具就绪)', 'dim'); break;
+    case 'proxychains': case 'tor': termLine('(代理/匿名工具 - 需要配置)', 'dim'); break;
+    case 'macchanger': termLine('Current MAC: 08:00:27:de:ad:be\nPermanent MAC: 08:00:27:de:ad:be', 'dim'); break;
+    case 'etherape': termLine('(图形化网络监控 - 需要X11)', 'dim'); break;
+    case 'netdiscover': termLine('192.168.1.1  00:11:22:33:44:55  Router\n192.168.1.100 AA:BB:CC:DD:EE:FF  Server', 'dim'); break;
+    case 'enum4linux': case 'smbclient': case 'smbmap': termLine('(SMB枚举工具 - 目标未开放445端口)', 'dim'); break;
+    case 'rpcclient': case 'impacket': termLine('(Windows协议工具集)', 'dim'); break;
+    case 'responder': termLine('(LLMNR/NBT-NS投毒工具)', 'dim'); break;
+    case 'crackmapexec': termLine('(域渗透工具)', 'dim'); break;
+    case 'bloodhound': case 'neo4j': termLine('(AD攻击路径分析)', 'dim'); break;
+    case 'powershell': case 'cmd': termLine('(Windows shell - 当前为Linux环境)', 'dim'); break;
+    case 'wmic': case 'sc': case 'tasklist': case 'taskkill': case 'reg': case 'schtasks': case 'at': case 'bcdedit': case 'wevtutil': case 'bitsadmin': case 'certutil': case 'vssadmin': case 'icacls': case 'takeown': case 'net': case 'ipconfig': case 'tracert': case 'pathping': case 'nbtstat': case 'hostname': case 'systeminfo': case 'driverquery': 
+      termLine('(Windows管理命令 - 当前为Linux环境, 但语法类似)', 'dim'); break;
+    default:
+      // check if it's a file in cwd
+      const filePath = resolvePath(args[0]);
+      if (FILESYSTEM[filePath] && FILESYSTEM[filePath].type === 'file') {
+        cmd_cat([c, args[0]]);
+        break;
+      }
+      termLine(`命令未找到: ${c}。输入 'help' 查看可用命令。`, 'err');
+  }
+
+  // Easter eggs
+  if (cmd === 'sudo rm -rf /') {
+    termLine('⚠ 警告: 此操作会销毁系统。已阻止。', 'err');
+    termLine('(但在真实CTF中，chroot环境里随便玩)', 'dim');
+  }
+  if (cmd === 'ls -la /root' && state.user !== 'root') {
+    termLine('ls: 无法打开目录/root: 权限不够', 'err');
+  }
+  if (cmd.includes('flag{') || cmd.includes('FLAG{')) {
+    termLine('🏁 看起来你找到了一个Flag格式! 但这是在本地终端中。在任务中使用正确命令来获取真正的Flag。', 'warn');
+  }
+}
+
+// =====================================================================
+//  COMMAND IMPLEMENTATIONS
+// =====================================================================
+function cmd_help() {
+  termLine('可用命令:', 'cyan');
+  termLine('  基础: ls, cd, cat, pwd, whoami, id, uname, clear, help', 'info');
+  termLine('  网络: nmap, curl, wget, ssh, ftp, nc, ping, dig, whois', 'info');
+  termLine('  分析: strings, file, base64, xxd, hexdump, objdump, nm, readelf', 'info');
+  termLine('  逆向: gdb, r2/radare2, ghidra, checksec, cyclic/pattern_create', 'info');
+  termLine('  取证: foremost, scalpel, photorec, extundelete, binwalk, exiftool', 'info');
+  termLine('  隐写: steghide, zsteg, stegsolve, openssl', 'info');
+  termLine('  破解: john, hashcat, hydra, sqlmap', 'info');
+  termLine('  提权: sudo, su, find, ps, netstat/ss, lsof, strace, ltrace', 'info');
+  termLine('  系统: mount, chmod, ps, top, dmesg, journalctl, systemctl', 'info');
+  termLine('  任务: missions, intel/hint, score, flags', 'cyan');
+  termLine('', 'info');
+  termLine('提示: Tab 键自动补全命令, 部分命令需要特定参数才能推进任务。', 'dim');
+}
+
+function cmd_ls(args) {
+  let path = state.cwd;
+  let showHidden = false;
+  let longFormat = false;
+  
+  for (const a of args.slice(1)) {
+    if (a === '-la' || a === '-al' || a === '-a') showHidden = true;
+    if (a === '-la' || a === '-al' || a === '-l') longFormat = true;
+    if (a === '-lh' || a === '-h') longFormat = true;
+    if (!a.startsWith('-')) path = resolvePath(a);
+  }
+  
+  const node = FILESYSTEM[path];
+  if (!node) { termLine(`ls: 无法访问'${args[1]||''}': 没有那个文件或目录`, 'err'); return; }
+  if (node.type !== 'dir') { termLine(args[1] || path, 'info'); return; }
+  
+  const items = node.children || [];
+  const filtered = showHidden ? items : items.filter(i => !i.startsWith('.'));
+  
+  if (longFormat) {
+    filtered.forEach(item => {
+      const fullPath = path === '/' ? '/' + item : path + '/' + item;
+      const f = FILESYSTEM[fullPath];
+      if (f) {
+        const perms = f.type === 'dir' ? 'drwxr-xr-x' : '-rw-r--r--';
+        const size = f.content ? Math.min(f.content.length * 10, 9999) : (f.type==='dir'?4096:0);
+        const date = 'Jul 15 08:23';
+        const name = f.type === 'dir' ? `<span style="color:var(--amber)">${item}</span>` : item;
+        termLine(`<span class="dim">${perms} 1 guest guest ${String(size).padStart(5)} ${date}</span> ${name}`, 'info');
+      }
+    });
+  } else {
+    const parts = filtered.map(item => {
+      const fullPath = path === '/' ? '/' + item : path + '/' + item;
+      const f = FILESYSTEM[fullPath];
+      if (f && f.type === 'dir') return `<span style="color:var(--amber)">${item}/</span>`;
+      return item;
+    });
+    termLine(parts.join('  '), 'info');
+  }
+}
+
+function cmd_cd(args) {
+  if (!args[1] || args[1] === '~') { state.cwd = '/home/guest'; updatePrompt(); return; }
+  if (args[1] === '..') {
+    const parts = state.cwd.split('/').filter(Boolean);
+    parts.pop();
+    state.cwd = parts.length ? '/' + parts.join('/') : '/';
+    updatePrompt();
+    return;
+  }
+  if (args[1] === '/') { state.cwd = '/'; updatePrompt(); return; }
+  
+  const target = resolvePath(args[1]);
+  const node = FILESYSTEM[target];
+  if (!node) { termLine(`cd: 没有那个文件或目录: ${args[1]}`, 'err'); return; }
+  if (node.type !== 'dir') { termLine(`cd: 不是目录: ${args[1]}`, 'err'); return; }
+  if (target === '/root' && state.user !== 'root') { termLine(`cd: 权限不够: /root`, 'err'); return; }
+  
+  state.cwd = target;
+  updatePrompt();
+}
+
+function cmd_cat(args) {
+  if (!args[1]) { termLine('cat: 缺少操作数', 'err'); return; }
+  const path = resolvePath(args[1]);
+  const node = FILESYSTEM[path];
+  if (!node) { termLine(`cat: ${args[1]}: 没有那个文件或目录`, 'err'); return; }
+  if (node.type === 'dir') { termLine(`cat: ${args[1]}: 是一个目录`, 'err'); return; }
+  
+  // Special handling for binary-like files
+  if (path === '/opt/keygen') {
+    termLine('⚠ 这是二进制文件, 直接查看会乱码。', 'warn');
+    termLine('提示: 使用 "strings keygen" 提取可读字符串', 'dim');
+    termLine('    使用 "objdump -d keygen" 反汇编', 'dim');
+    return;
+  }
+  if (path === '/usr/bin/vuln_server') {
+    termLine('⚠ 这是 SUID 二进制文件 (漏洞程序)', 'warn');
+    termLine('提示: 使用 "checksec vuln_server" 检查保护机制', 'dim');
+    termLine('    使用 "gdb vuln_server" 调试分析', 'dim');
+    return;
+  }
+  if (path.includes('disk.img') || path.includes('traffic.pcap') || path.includes('cover.png') || path.includes('.enc') || path.includes('.kdbx')) {
+    termLine(`⚠ 这是 ${path.split('.').pop()} 格式文件, 需要使用专门工具分析:`, 'warn');
+    if (path.includes('disk.img')) termLine('  foremost -i disk.img -o recovered/', 'dim');
+    if (path.includes('traffic.pcap')) termLine('  tshark -r traffic.pcap 或 strings traffic.pcap', 'dim');
+    if (path.includes('cover.png')) termLine('  zsteg cover.png 或 steghide extract -sf cover.png', 'dim');
+    if (path.includes('.enc')) termLine('  openssl aes-256-cbc -d -in message.enc -out decrypted.txt', 'dim');
+    if (path.includes('.kdbx')) termLine('  需要 KeePass 主密钥才能打开', 'dim');
+    return;
+  }
+  
+  const lines = node.content.split('\n');
+  lines.forEach(line => termLine(escapeHtml(line), 'info'));
+}
+
+function cmd_nmap(args) {
+  let target = '';
+  let opts = '';
+  for (const a of args.slice(1)) {
+    if (a.startsWith('-')) opts += a + ' ';
+    else target = a;
+  }
+  
+  if (!target) { termLine('用法: nmap [选项] 目标', 'err'); return; }
+  
+  termLine(`Starting Nmap 7.94 ( https://nmap.org )`, 'info');
+  termLine(`Scanning ${target}...`, 'dim');
+  
+  // Simulate scan delay
+  setTimeout(() => {
+    if (target === '10.0.0.0/24' || opts.includes('-sn')) {
+      termLine('Nmap scan report for 10.0.0.1 (gateway)', 'info');
+      termLine('Host is up (0.001s latency)', 'dim');
+      termLine('Nmap scan report for 10.0.0.12', 'info');
+      termLine('Host is up (0.002s latency)', 'dim');
+      termLine('Nmap scan report for 10.0.0.45', 'info');
+      termLine('Host is up (0.003s latency)', 'dim');
+      termLine('Nmap scan report for 10.0.0.100', 'info');
+      termLine('Host is up (0.001s latency)', 'dim');
+      termLine('Nmap scan report for 10.0.0.200 (gateway-alt)', 'info');
+      termLine('4 hosts up', 'success');
+    } else if (target === '10.0.0.100') {
+      if (opts.includes('-sV')) {
+        termLine('PORT     STATE SERVICE  VERSION', 'info');
+        termLine('22/tcp   open  ssh      OpenSSH 8.4', 'info');
+        termLine('80/tcp   open  http     Apache 2.4.41 (PHP 7.4.33)', 'info');
+        termLine('3306/tcp open  mysql    MySQL 5.7.39', 'info');
+        termLine('Service detection completed.', 'success');
+      } else if (opts.includes('-sC') || opts.includes('--script')) {
+        termLine('PORT   STATE SERVICE  VERSION', 'info');
+        termLine('80/tcp open  http', 'info');
+        termLine('| http-enum: /backup.zip => Found!', 'warn');
+        termLine('| http-headers: X-Powered-By: PHP/7.4.33', 'info');
+        termLine('|_Server: Apache/2.4.41', 'info');
+        termLine('22/tcp open  ssh', 'info');
+        termLine('| ssh-auth-methods: password auth enabled', 'warn');
+        termLine('3306/tcp open mysql', 'info');
+        termLine('| mysql-info: Protocol: 10, Version: 5.7.39', 'info');
+      } else {
+        termLine('PORT     STATE SERVICE', 'info');
+        termLine('22/tcp   open  ssh', 'info');
+        termLine('80/tcp   open  http', 'info');
+        termLine('3306/tcp open  mysql', 'info');
+      }
+    } else if (target === '10.0.0.12') {
+      termLine('PORT     STATE SERVICE  VERSION', 'info');
+      termLine('21/tcp   open  ftp      vsftpd 3.0.3 (anonymous allowed)', 'warn');
+      termLine('22/tcp   open  ssh      OpenSSH 8.4', 'info');
+      termLine('8080/tcp open  http     Apache Tomcat 9.0', 'info');
+    } else if (target === '10.0.0.45') {
+      termLine('PORT   STATE SERVICE', 'info');
+      termLine('80/tcp open  http', 'info');
+      termLine('(物联网设备 - 打印机面板)', 'dim');
+    } else {
+      termLine(`Nmap scan report for ${target}`, 'info');
+      termLine('Host is up but no ports open', 'dim');
+    }
+  }, 800);
+}
+
+function cmd_curl(args) {
+  let url = '';
+  let showHeaders = false;
+  for (const a of args.slice(1)) {
+    if (a === '-I' || a === '--head') showHeaders = true;
+    else if (!a.startsWith('-')) url = a;
+  }
+  
+  if (!url) { termLine('用法: curl [选项] URL', 'err'); return; }
+  
+  termLine(`* Connecting to ${url}...`, 'dim');
+  setTimeout(() => {
+    if (url.includes('10.0.0.100')) {
+      if (showHeaders) {
+        termLine('HTTP/1.1 200 OK', 'info');
+        termLine('Server: Apache/2.4.41 (Ubuntu)', 'info');
+        termLine('X-Powered-By: PHP/7.4.33', 'cyan');
+        termLine('Set-Cookie: PHPSESSID=a1b2c3d4e5; path=/', 'info');
+        termLine('Content-Type: text/html; charset=UTF-8', 'info');
+        termLine('<!-- TODO: remove /backup.zip before deploy -->', 'warn');
+        termLine('<!-- Debug: admin login at /login.php -->', 'warn');
+      } else {
+        termLine('<!DOCTYPE html>', 'dim');
+        termLine('<html><head><title>Company Portal</title></head>', 'dim');
+        termLine('<body><h1>Welcome to Intranet</h1>', 'dim');
+        termLine('<p>Internal use only.</p>', 'dim');
+        termLine('<!-- Dev note: backup at /backup.zip -->', 'warn');
+        termLine('</body></html>', 'dim');
+      }
+    } else if (url.includes('login.php')) {
+      termLine('<!DOCTYPE html>', 'dim');
+      termLine('<form action="auth.php" method="POST">', 'dim');
+      termLine('<input name="user" placeholder="Username">', 'dim');
+      termLine('<input name="pass" type="password" placeholder="Password">', 'dim');
+      termLine('</form>', 'dim');
+      termLine('<!-- SQL query: SELECT * FROM users WHERE user="$user" AND pass="$pass" -->', 'warn');
+    } else {
+      termLine(`连接到 ${url}...`, 'info');
+      termLine('HTTP/1.1 404 Not Found', 'err');
+    }
+  }, 400);
+}
+
+function cmd_wget(args) {
+  const url = args[args.length-1];
+  if (!url || url.startsWith('-')) { termLine('用法: wget URL', 'err'); return; }
+  termLine(`-- 正在下载: ${url}`, 'info');
+  setTimeout(() => {
+    if (url.includes('backup.zip')) {
+      termLine('backup.zip  100%[=====>]  2.3MB  saved', 'success');
+      termLine('解压内容: config.php, users.sql, notes.txt', 'cyan');
+      // Add to filesystem
+      addVirtualFile('/home/guest/backup.zip', '[ZIP压缩包 - 包含config.php, users.sql, notes.txt]');
+      addVirtualFile('/home/guest/notes.txt', `开发笔记:
+1. 管理员默认密码还是 admin:admin123 - 必须改掉!
+2. 数据库端口3306对外暴露了, 记得关
+3. /backup.zip 忘了删, 里面有数据库导出
+4. 下次部署记得把debug注释去掉`);
+    } else {
+      termLine(`${url}  100% downloaded`, 'success');
+    }
+  }, 600);
+}
+
+function cmd_ssh(args) {
+  const target = args.find(a => a.includes('@'));
+  if (!target) { termLine('用法: ssh user@host', 'err'); return; }
+  termLine(`Connecting to ${target}...`, 'dim');
+  setTimeout(() => {
+    if (target === 'admin@10.0.0.100') {
+      termLine('admin@10.0.0.100\'s password: ', 'info');
+      termLine('(输入密码: admin123)', 'dim');
+      termLine('Welcome to Ubuntu 20.04 LTS', 'success');
+      termLine('Last login: Mon Jul 15 08:23 from 10.0.0.50', 'dim');
+      termLine('admin@webserver:~$ ', 'cyan');
+      state.user = 'admin';
+      state.host = 'webserver';
+      updatePrompt();
+    } else if (target.includes('root@10.0.0.12')) {
+      termLine('root@10.0.0.12\'s password: ', 'info');
+      termLine('(需要SSH私钥)', 'dim');
+      termLine('Permission denied (publickey)', 'err');
+    } else {
+      termLine(`ssh: connect to host ${target} port 22: Connection refused`, 'err');
+    }
+  }, 500);
+}
+
+function cmd_ftp(args) {
+  const target = args[args.length-1];
+  termLine(`Connecting to ${target}...`, 'dim');
+  setTimeout(() => {
+    if (target === '10.0.0.12') {
+      termLine('220 FTP Server ready', 'success');
+      termLine('Name (10.0.0.12:guest): anonymous', 'info');
+      termLine('230 Login successful', 'success');
+      termLine('Remote system type is UNIX.', 'info');
+      termLine('ftp> ls', 'cyan');
+      termLine('drwxr-xr-x 2 0 0 4096 Jul 10 server.key', 'info');
+      termLine('drwxr-xr-x 2 0 0 4096 Jul 10 config_backup.tar.gz', 'info');
+      termLine('ftp> get server.key', 'cyan');
+      termLine('226 Transfer complete', 'success');
+      termLine('ftp> get config_backup.tar.gz', 'cyan');
+      termLine('226 Transfer complete', 'success');
+      addVirtualFile('/home/guest/server.key', '[SSH私钥 - RSA 2048位]');
+      addVirtualFile('/home/guest/config_backup.tar.gz', '[配置文件备份 - 包含id_rsa和db.conf]');
+    } else {
+      termLine('ftp: connect: Connection refused', 'err');
+    }
+  }, 500);
+}
+
+function cmd_nc(args) {
+  const ip = args.find(a => /\d+\.\d+\.\d+\.\d+/.test(a));
+  const port = args.find(a => /^\d{2,5}$/.test(a));
+  if (!ip || !port) { termLine('用法: nc [IP] [端口]', 'err'); return; }
+  termLine(`连接到 ${ip}:${port}...`, 'dim');
+  setTimeout(() => {
+    if (port === '31337') {
+      termLine('Welcome to vuln_server!', 'cyan');
+      termLine('Enter your name: ', 'cyan');
+      termLine('(输入测试字符串, 试试超长输入...)', 'dim');
+      termLine('(提示: 发送 200 字节 A 看看会发生什么)', 'dim');
+    } else {
+      termLine('Connection refused', 'err');
+    }
+  }, 300);
+}
+
+function cmd_strings(args) {
+  const file = args[args.length-1];
+  const path = resolvePath(file);
+  termLine(`提取 ${file} 中的可读字符串:`, 'cyan');
+  setTimeout(() => {
+    if (path === '/opt/keygen' || file === 'keygen') {
+      termLine('Enter serial key:', 'info');
+      termLine('Access Granted!', 'info');
+      termLine('Access Denied!', 'info');
+      termLine('SUPER_SECRET_KEY_2024', 'warn');
+      termLine('TODO: obfuscate this string before release!', 'warn');
+      termLine('strcmp', 'dim');
+      termLine('printf', 'dim');
+      termLine('/lib/x86_64-linux-gnu/libc.so.6', 'dim');
+    } else if (path.includes('vuln_server') || file.includes('vuln')) {
+      termLine('Welcome to vuln_server!', 'info');
+      termLine('Enter your name:', 'info');
+      termLine('Buffer overflow? Never heard of it!', 'warn');
+      termLine('system', 'dim');
+      termLine('/bin/sh', 'warn');
+      termLine('win', 'warn');
+    } else {
+      termLine('(无显著可读字符串)', 'dim');
+    }
+  }, 300);
+}
+
+function cmd_file(args) {
+  const f = args[1];
+  if (!f) { termLine('用法: file [文件]', 'err'); return; }
+  const path = resolvePath(f);
+  if (path.includes('disk.img')) termLine('disk.img: DOS/MBR boot sector, EXT4 filesystem', 'info');
+  else if (path.includes('traffic.pcap')) termLine('traffic.pcap: pcap capture file, 42 packets', 'info');
+  else if (path.includes('cover.png')) termLine('cover.png: PNG image, 800 x 600, 8-bit/color RGB', 'info');
+  else if (path.includes('.enc')) termLine('message.enc: AES-256-CBC encrypted data', 'info');
+  else if (path.includes('.kdbx')) termLine('passwords.kdbx: KeePass password database v2', 'info');
+  else if (path === '/opt/keygen') termLine('keygen: ELF 64-bit LSB executable, x86-64, dynamically linked', 'info');
+  else if (path === '/usr/bin/vuln_server') termLine('vuln_server: ELF 32-bit LSB executable, setuid bit set', 'warn');
+  else if (FILESYSTEM[path]) termLine(`${f}: ASCII text`, 'info');
+  else termLine(`${f}: cannot open: No such file`, 'err');
+}
+
+function cmd_base64(args) {
+  const isDecode = args.includes('-d') || args.includes('--decode');
+  const input = args[args.length-1];
+  if (isDecode) {
+    // Try to decode
+    try {
+      const decoded = atob(input);
+      termLine(`解码结果: ${decoded}`, 'success');
+    } catch {
+      termLine('无效的Base64输入', 'err');
+    }
+  } else {
+    termLine(`编码: ${btoa(input)}`, 'info');
+  }
+}
+
+function cmd_xxd(args) {
+  const file = args[args.length-1];
+  termLine(`Hex dump of ${file}:`, 'cyan');
+  termLine('00000000: 4865 6c6c 6f5f 4354 460a 4865 6c6c 6f5f  Hello_CTF.Hello_', 'dim');
+  termLine('00000010: 576f 726c 640a 0a0a 0a0a 0a0a 0a0a 0a0a  World...........', 'dim');
+}
+
+function cmd_hexdump(args) {
+  termLine('0000000 4865 6c6c 6f5f 4354 460a 0a0a 0a0a 0a0a', 'dim');
+  termLine('0000010 0a0a 0a0a 0a0a 0a0a 0a0a 0a0a 0a0a 0a0a', 'dim');
+  termLine('48656c6c6f5f435446 = "Hello_CTF"', 'success');
+}
+
+function cmd_objdump(args) {
+  const file = args[args.length-1];
+  termLine(`反汇编 ${file}:`, 'cyan');
+  if (file.includes('keygen')) {
+    termLine('  40112b:  mov    edi,0x402080  ; "Enter serial key:"', 'dim');
+    termLine('  401132:  call   scanf@plt', 'dim');
+    termLine('  401145:  mov    eax, [rbp-0x4]', 'dim');
+    termLine('  401148:  cmp    eax, 0x539      ; 比较输入与1337', 'warn');
+    termLine('  40114b:  je     401160         ; 相等则跳转', 'warn');
+    termLine('  401160:  mov    edi,0x402090  ; "Access Granted!"', 'success');
+  } else {
+    termLine('  (无符号表, 尝试 "objdump -d" 或 "gdb" 调试)', 'dim');
+  }
+}
+
+function cmd_nm(args) {
+  const file = args[args.length-1];
+  if (file.includes('keygen')) {
+    termLine('0000000000401160 T grant_access', 'info');
+    termLine('0000000000401180 T main', 'info');
+    termLine('0000000000401050 T check_key', 'info');
+    termLine('                 U printf@GLIBC_2.2.5', 'dim');
+    termLine('                 U strcmp@GLIBC_2.2.5', 'dim');
+  } else if (file.includes('vuln')) {
+    termLine('08048456 T win', 'warn');
+    termLine('08048560 T main', 'info');
+    termLine('080483d0 T vulnerable_function', 'warn');
+  } else {
+    termLine('(无符号信息)', 'dim');
+  }
+}
+
+function cmd_readelf(args) {
+  const file = args[args.length-1];
+  termLine(`ELF 信息 for ${file}:`, 'cyan');
+  termLine('  Type: DYN (Position-Independent Executable)', 'info');
+  termLine('  Entry point: 0x1080', 'info');
+  termLine('  Program Headers:', 'info');
+  termLine('    RWX segment found at 0x0804a000!', 'warn');
+}
+
+function cmd_gdb(args) {
+  const file = args.find(a => !a.startsWith('-'));
+  termLine(`GNU gdb (GDB) 12.1`, 'info');
+  termLine(`Reading symbols from ${file}...`, 'dim');
+  if (file && file.includes('keygen')) {
+    termLine('(gdb) break *main', 'cyan');
+    termLine('Breakpoint 1 at 0x401180', 'success');
+    termLine('(gdb) run', 'cyan');
+    termLine('Starting program...', 'dim');
+    termLine('Breakpoint 1, 0x0000000000401180 in main ()', 'info');
+    termLine('(gdb) info functions', 'cyan');
+    termLine('0x00401160  grant_access', 'info');
+    termLine('0x00401050  check_key', 'info');
+    termLine('(gdb) x/s 0x402080', 'cyan');
+    termLine('0x402080: "Enter serial key:"', 'info');
+  } else if (file && file.includes('vuln')) {
+    termLine('(gdb) break vulnerable_function', 'cyan');
+    termLine('Breakpoint 1 at 0x080483d0', 'success');
+    termLine('(gdb) run', 'cyan');
+    termLine('Starting program: /usr/bin/vuln_server', 'dim');
+    termLine('Welcome to vuln_server!', 'info');
+    termLine('Enter your name: AAAAAAAAAAAAAAAAAA...', 'cyan');
+    termLine('Program received signal SIGSEGV, Segmentation fault.', 'err');
+    termLine('0x61616161 in ?? ()', 'err');
+    termLine('(gdb) info registers', 'cyan');
+    termLine('eip            0x61616161  0x61616161', 'err');
+    termLine('(gdb) pattern_offset 0x61616161', 'cyan');
+    termLine('Offset: 140 bytes', 'warn');
+  } else {
+    termLine('(gdb) _', 'cyan');
+  }
+}
+
+function cmd_radare(args) {
+  const file = args[args.length-1];
+  termLine('[0x00000000]> aaa', 'cyan');
+  termLine('[x] Analyze all flags starting with sym.', 'dim');
+  termLine('[x] Analyze imports', 'dim');
+  termLine('[x] Analyze entrypoint', 'dim');
+  if (file && file.includes('keygen')) {
+    termLine('[0x00000000]> afl', 'cyan');
+    termLine('0x00401160  42  sym.grant_access', 'info');
+    termLine('0x00401050  128 sym.check_key', 'info');
+    termLine('0x00401180  64  sym.main', 'info');
+    termLine('[0x00000000]> iz', 'cyan');
+    termLine('000 0x00002080 0x00402080 19  20 (.rodata) ascii Enter serial key:', 'info');
+    termLine('001 0x00002094 0x00402094 16  17 (.rodata) ascii SUPER_SECRET_KEY_2024', 'warn');
+    termLine('002 0x000020a5 0x004020a5 16  17 (.rodata) ascii Access Granted!', 'info');
+  } else {
+    termLine('[0x00000000]> afl', 'cyan');
+    termLine('0x080483d0  64  sym.vulnerable_function', 'warn');
+    termLine('0x08048456  32  sym.win', 'warn');
+    termLine('0x08048560  128 sym.main', 'info');
+  }
+}
+
+function cmd_foremost(args) {
+  termLine('Foremost 1.5.7 by Jesse Kornblum', 'info');
+  termLine('Invocation: foremost -i disk.img -o recovered/', 'dim');
+  termLine('Starting: disk.img', 'dim');
+  setTimeout(() => {
+    termLine('|--------------------------------------------------------------------------|', 'dim');
+    termLine('| File Extension |   num  |  *avg.  |  *total  |  *min  |  *max  | *mode  |', 'dim');
+    termLine('|--------------------------------------------------------------------------|', 'dim');
+    termLine('| jpg            |      1 |  245760 |   245760 | 245760 | 245760 | 245760 |', 'info');
+    termLine('| pdf            |      1 |  102400 |   102400 | 102400 | 102400 | 102400 |', 'info');
+    termLine('| txt            |      1 |    1024 |     1024 |   1024 |   1024 |   1024 |', 'info');
+    termLine('|--------------------------------------------------------------------------|', 'success');
+    termLine('Recovered files saved to ./recovered/', 'success');
+    addVirtualFile('/home/guest/recovered/recup_001.jpg', '[恢复的JPG图片]');
+    addVirtualFile('/home/guest/recovered/recup_002.pdf', '[恢复的PDF文档]');
+    addVirtualFile('/home/guest/recovered/recup_003.txt', `Meeting notes:
+- 密码库位置: /var/secret/passwords.kdbx
+- Master key 还没设好, 暂时用 k3yboard_c@t
+- 记得把备份盘格式化掉!`);
+  }, 800);
+}
+
+function cmd_scalpel(args) {
+  termLine('Scalpel 2.0 - filesystem-agnostic carving tool', 'info');
+  termLine('Carving files from disk.img...', 'dim');
+  setTimeout(() => {
+    termLine('Files carved: 3 (jpg:1, pdf:1, txt:1)', 'success');
+  }, 600);
+}
+
+function cmd_photorec(args) {
+  termLine('PhotoRec 7.1 - file recovery tool', 'info');
+  termLine('Please select the filesystem type (default: ext4)', 'dim');
+  termLine('Scanning disk.img...', 'dim');
+  setTimeout(() => {
+    termLine('Recovery completed:', 'success');
+    termLine('  1 file recovered in /home/guest/photorec_recovery/', 'info');
+  }, 700);
+}
+
+function cmd_extundelete(args) {
+  termLine('extundelete 0.2.4', 'info');
+  termLine('Reading filesystem metadata...', 'dim');
+  termLine('Deleted inodes found: 3', 'success');
+  termLine('Restoring files...', 'dim');
+  setTimeout(() => {
+    termLine('3 files recovered to ./RECOVERED_FILES/', 'success');
+  }, 500);
+}
+
+function cmd_steghide(args) {
+  termLine('Steghide 0.5.1 - steganography program', 'info');
+  if (args.includes('extract')) {
+    termLine('Enter passphrase: ', 'cyan');
+    termLine('(提示: 尝试空密码或常见密码)', 'dim');
+    setTimeout(() => {
+      termLine('wrote extracted data to hidden.txt', 'success');
+      addVirtualFile('/home/guest/hidden.txt', `加密密钥: P@ssw0rd_St3g0_2024
+下一步: 用此密钥解密 message.enc`);
+    }, 500);
+  } else {
+    termLine('Usage: steghide extract -sf cover.png [-p password]', 'dim');
+  }
+}
+
+function cmd_zsteg(args) {
+  const file = args[args.length-1];
+  termLine(`Analyzing ${file} with zsteg...`, 'cyan');
+  setTimeout(() => {
+    termLine('imagedata.. b1,rgba,lsb,xy  .. text: "Key hidden in LSB"', 'warn');
+    termLine('imagedata.. b2,rgba,lsb,xy  .. text: "Step2: decrypt message.enc"', 'warn');
+    termLine('imagedata.. b1,rgb,lsb,xy   .. file: hidden.txt (234 bytes)', 'success');
+  }, 400);
+}
+
+function cmd_stegsolve(args) {
+  termLine('StegSolve 1.3 - Java GUI steganography tool', 'info');
+  termLine('(图形界面模式 - 在终端中模拟分析结果)', 'dim');
+  termLine('Analyzing bit planes...', 'dim');
+  setTimeout(() => {
+    termLine('Plane 0 (LSB): 隐藏数据检测到!', 'warn');
+    termLine('提取方法: Analyse → Data Extract → LSB First → Save', 'dim');
+  }, 400);
+}
+
+function cmd_openssl(args) {
+  if (args.includes('-d') || args.includes('decrypt')) {
+    termLine('Enter decryption password: ', 'cyan');
+    setTimeout(() => {
+      termLine('Decryption successful!', 'success');
+      termLine('明文内容: flag{st3g4n0graphy_pr0}', 'success');
+    }, 400);
+  } else {
+    termLine('OpenSSL 3.0.2 - cryptographic toolkit', 'info');
+    termLine('Usage: openssl aes-256-cbc -d -in message.enc -out decrypted.txt', 'dim');
+  }
+}
+
+function cmd_john(args) {
+  const file = args[args.length-1];
+  termLine(`John the Ripper 1.9.0-jumbo-1`, 'info');
+  termLine(`Loading hashes from ${file}...`, 'dim');
+  setTimeout(() => {
+    termLine('Loaded 1 password hash (MD5)', 'info');
+    termLine('Remaining 0 password hashes', 'success');
+    termLine('admin:password  (MD5)', 'success');
+    termLine('', 'info');
+    termLine('🏁 FLAG 捕获: flag{sq1_1nj3ct3d}', 'success');
+  }, 1000);
+}
+
+function cmd_hashcat(args) {
+  termLine('hashcat v6.2.6 - advanced password recovery', 'info');
+  termLine('Usage: hashcat -m 0 -a 0 hashes.txt wordlist.txt', 'dim');
+  termLine('(正在模拟破解...)', 'dim');
+  setTimeout(() => {
+    termLine('5f4dcc3b5aa765d61d8327deb882cf99:password', 'success');
+    termLine('Recovered 1/1 (100%)', 'success');
+  }, 800);
+}
+
+function cmd_hydra(args) {
+  termLine('Hydra v9.3 - brute force login cracker', 'info');
+  setTimeout(() => {
+    termLine('[22][ssh] host: 10.0.0.100  login: admin  password: admin123', 'success');
+    termLine('1 valid password found!', 'success');
+  }, 1000);
+}
+
+function cmd_sqlmap(args) {
+  termLine('sqlmap 1.7.7 - automatic SQL injection tool', 'info');
+  setTimeout(() => {
+    termLine('[*] Testing connection to target URL...', 'dim');
+    termLine('[*] Checking if URL is stable...', 'dim');
+    termLine('[+] URL is stable', 'success');
+    termLine('[*] Testing for SQL injection on parameter "user"...', 'dim');
+    termLine('[+] Parameter "user" is vulnerable to SQL injection!', 'warn');
+    termLine('[*] Fetching database names...', 'dim');
+    termLine('[+] Databases: information_schema, webapp, admin', 'success');
+    termLine('[*] Dumping table "users"...', 'dim');
+    termLine('admin | 5f4dcc3b5aa765d61d8327deb882cf99', 'info');
+    termLine('[+] MD5 hash cracked: password', 'success');
+    termLine('', 'info');
+    termLine('🏁 FLAG 捕获: flag{sq1_1nj3ct3d}', 'success');
+  }, 1200);
+}
+
+function cmd_wireshark(args) {
+  const file = args.find(a => a.includes('.pcap'));
+  termLine(`分析抓包文件: ${file || 'traffic.pcap'}`, 'cyan');
+  setTimeout(() => {
+    termLine('Packets: 42', 'info');
+    termLine('Protocol breakdown: TCP:35, UDP:5, ICMP:2', 'info');
+    termLine('Notable streams:', 'info');
+    termLine('  Stream 3 (TCP): DNS query for secret.nexus.local', 'warn');
+    termLine('  Stream 7 (TCP): HTTP POST to /api/key exchange', 'warn');
+    termLine('  Stream 12 (TCP): Encrypted TLS 1.2 handshake', 'info');
+    termLine('', 'info');
+    termLine('提取字符串:', 'cyan');
+    termLine('  U2VjcmV0IG1lc3NhZ2U6IEhlbGxvX1dvcmxk', 'warn');
+    termLine('  48656c6c6f5f435446', 'warn');
+    termLine('', 'info');
+    termLine('提示: 第一条是Base64, 第二条是Hex编码', 'dim');
+  }, 500);
+}
+
+function cmd_exiftool(args) {
+  const file = args[args.length-1];
+  termLine(`ExifTool output for ${file}:`, 'cyan');
+  if (file.includes('cover') || file.includes('png')) {
+    termLine('File Type: PNG', 'info');
+    termLine('Image Size: 800x600', 'info');
+    termLine('Color Type: RGB with Alpha', 'info');
+    termLine('Comment: Key hidden in the least significant bits', 'warn');
+    termLine('Software: GIMP 2.10.30', 'dim');
+    termLine('XMP: stego_tool=zsteg v0.3.7', 'warn');
+  } else {
+    termLine('(无特殊元数据)', 'dim');
+  }
+}
+
+function cmd_sudo(args) {
+  const cmd2 = args.slice(1).join(' ');
+  if (cmd2 === '-l' || cmd2 === '-ln') {
+    if (state.user === 'admin') {
+      termLine('Matching Defaults entries for admin on nexus:', 'info');
+      termLine('    env_reset, mail_badpass', 'dim');
+      termLine('User admin may run the following commands on nexus:', 'info');
+      termLine('    (ALL) NOPASSWD: /usr/bin/find', 'warn');
+      termLine('    (ALL) NOPASSWD: /usr/bin/vim', 'warn');
+      termLine('    (ALL) NOPASSWD: /usr/bin/less', 'warn');
+    } else {
+      termLine(`${state.user} is not allowed to run sudo on nexus.`, 'err');
+    }
+    return;
+  }
+  
+  if (state.user !== 'admin' && state.user !== 'root') {
+    termLine(`[sudo] password for ${state.user}: `, 'info');
+    termLine('Sorry, user guest is not allowed to execute sudo.', 'err');
+    return;
+  }
+  
+  // Check for privilege escalation via find
+  if (cmd2.includes('find') && cmd2.includes('-exec')) {
+    termLine('root@nexus:/# whoami', 'success');
+    termLine('root', 'success');
+    termLine('🏁 权限提升成功! 可以读取 /root/root.txt', 'success');
+    addVirtualFile('/root/root.txt', 'flag{r00t_3qu1v4l3nt}');
+    return;
+  }
+  
+  termLine(`执行: ${cmd2}`, 'info');
+  termLine('(如果是提权操作, 试试 "sudo find / -exec /bin/sh \\; -quit")', 'dim');
+}
+
+function cmd_find(args) {
+  let path = '.';
+  let execCmd = '';
+  let perm = '';
+  
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '-perm') perm = args[i+1];
+    if (args[i] === '-exec') {
+      execCmd = args[i+1];
+      i++;
+    }
+    if (!args[i].startsWith('-')) path = args[i];
+  }
+  
+  if (perm === '-4000' || perm === '-u+s') {
+    termLine('查找 SUID 文件:', 'cyan');
+    termLine('/usr/bin/vuln_server (root:root)', 'warn');
+    termLine('/usr/bin/passwd (root:root)', 'dim');
+    termLine('/usr/bin/su (root:root)', 'dim');
+    return;
+  }
+  
+  if (execCmd) {
+    termLine(`执行: ${execCmd}`, 'info');
+    if (execCmd.includes('sh') || execCmd.includes('bash')) {
+      termLine('root@nexus:/# ', 'success');
+      termLine('🏁 Shell 以 root 权限执行!', 'success');
+    }
+    return;
+  }
+  
+  // default find
+  termLine(`在 ${path} 中搜索...`, 'dim');
+  termLine('./home/guest/notes.txt', 'info');
+  termLine('./home/guest/tools/readme.txt', 'info');
+  termLine('./opt/keygen', 'info');
+  termLine('./usr/bin/vuln_server', 'warn');
+}
+
+function cmd_grep(args) {
+  const pattern = args[1];
+  const file = args[args.length-1];
+  termLine(`在 ${file} 中搜索 "${pattern}":`, 'cyan');
+  termLine(`(使用 grep -r "pattern" /path 递归搜索)`, 'dim');
+  if (pattern && pattern.includes('password')) {
+    termLine('notes.txt: 管理员默认密码还是 admin:admin123', 'warn');
+    termLine('auth.log: Accepted password for admin', 'warn');
+  }
+}
+
+function cmd_tar(args) {
+  termLine('解压中...', 'dim');
+  setTimeout(() => {
+    termLine('config_backup/', 'info');
+    termLine('config_backup/id_rsa', 'success');
+    termLine('config_backup/id_rsa.pub', 'info');
+    termLine('config_backup/db.conf', 'success');
+    termLine('', 'info');
+    termLine('db.conf 内容:', 'cyan');
+    termLine('host=localhost', 'info');
+    termLine('user=root', 'info');
+    termLine('password=Tr0ub4dor&3', 'warn');
+    addVirtualFile('/home/guest/id_rsa', `-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAz8ZbxXt...
+[SSH私钥 - 可用于登录root@10.0.0.12]
+-----END RSA PRIVATE KEY-----`);
+  }, 500);
+}
+
+function cmd_python(args) {
+  // Python for exploit development
+  if (args.includes('exploit') || args.includes('payload') || args.includes('-c')) {
+    termLine('(Python exploit script mode)', 'cyan');
+    termLine('示例 exploit:', 'dim');
+    termLine(`<span class="com">#!/usr/bin/env python3</span>`, 'dim');
+    termLine(`<span class="kw">from</span> pwn <span class="kw">import</span> *`, 'dim');
+    termLine(`p = remote(<span class="str">'10.0.0.100'</span>, <span class="num">31337</span>)`, 'dim');
+    termLine(`payload = <span class="str">b'A'</span> * <span class="num">140</span> + p32(<span class="num">0x08048456</span>)`, 'dim');
+    termLine(`p.sendline(payload)`, 'dim');
+    termLine(`p.interactive()  <span class="com"># 获得shell!</span>`, 'dim');
+    termLine('', 'info');
+    termLine('🏁 FLAG 捕获: flag{b0ffer_0verfl0w_m4ster}', 'success');
+    return;
+  }
+  termLine('Python 3.11.2 (interactive mode)', 'info');
+  termLine('>>> (输入表达式或脚本路径)', 'dim');
+}
+
+// =====================================================================
+//  MISSION SYSTEM
+// =====================================================================
+function checkMissionProgress(cmd) {
+  const mission = state.missions.find(m => m.id === state.currentMission);
+  if (!mission) return;
+  if (mission.status === 'done') return;
+  
+  const steps = mission.steps;
+  const idx = state.stepIndex[mission.id] || 0;
+  if (idx >= steps.length) return;
+  
+  const step = steps[idx];
+  if (step.check(cmd)) {
+    state.stepIndex[mission.id] = idx + 1;
+    termLine(`✓ ${step.msg}`, 'success');
+    
+    // Check if mission complete
+    if (state.stepIndex[mission.id] >= steps.length) {
+      completeMission(mission);
+    }
+    renderMissions();
+  }
+}
+
+function completeMission(mission) {
+  mission.status = 'done';
+  state.score += mission.reward;
+  mission.flags.forEach(f => state.completedFlags.add(f));
+  
+  // Unlock next missions
+  const idx = MISSIONS.findIndex(m => m.id === mission.id);
+  if (idx + 1 < MISSIONS.length) {
+    const next = MISSIONS[idx + 1];
+    next.status = 'active';
+    state.unlockedMissions.add(next.id);
+  }
+  
+  showNotif(`🏁 任务完成: ${mission.title}\n+${mission.reward} 积分`, 'success');
+  
+  // Special unlocks
+  if (mission.id === 'web-01') {
+    // After web access, unlock more
+  }
+  
+  updateTopBar();
+  renderMissions();
+  
+  // Auto-switch to next active mission
+  setTimeout(() => {
+    const nextActive = state.missions.find(m => m.status === 'active');
+    if (nextActive) setActiveMission(nextActive.id);
+  }, 2000);
+}
+
+function showMissions() {
+  termLine('', 'info');
+  termLine('═══ ACTIVE OPERATIONS ═══', 'cyan');
+  state.missions.forEach(m => {
+    const icon = m.status === 'done' ? '✅' : (m.status === 'active' ? '🔄' : '🔒');
+    const diffColor = m.diff === 'easy' ? 'green' : (m.diff === 'medium' ? 'amber' : 'red');
+    termLine(`  ${icon} ${m.title}  [${m.diff.toUpperCase()}]  +${m.reward}pts`, m.status==='done'?'success':(m.status==='active'?'cyan':'dim'));
+  });
+  termLine('', 'info');
+  termLine(`总积分: ${state.score} | 完成: ${state.missions.filter(m=>m.status==='done').length}/${state.missions.length}`, 'cyan');
+  termLine('输入 "intel" 查看当前任务情报', 'dim');
+}
+
+function showIntel() {
+  const mission = state.missions.find(m => m.id === state.currentMission);
+  if (!mission) return;
+  termLine('', 'info');
+  termLine(`═══ INTEL: ${mission.title} ═══`, 'purple');
+  termLine(mission.intel, 'purple');
+  termLine('', 'info');
+}
+
+function setActiveMission(id) {
+  state.currentMission = id;
+  renderMissions();
+  showMissionBrief(id);
+}
+
+function showMissionBrief(id) {
+  const m = state.missions.find(x => x.id === id);
+  if (!m) return;
+  termLine('', 'info');
+  termLine(`┌─────────────────────────────────────┐`, 'cyan');
+  termLine(`│  OPERATION: ${m.title.padEnd(22)}│`, 'cyan');
+  termLine(`│  难度: ${m.diff.toUpperCase().padEnd(20)}│`, 'cyan');
+  termLine(`│  奖励: +${String(m.reward).padEnd(18)}│`, 'cyan');
+  termLine(`└─────────────────────────────────────┘`, 'cyan');
+  termLine('', 'info');
+  termLine(m.desc, 'info');
+  termLine('', 'info');
+  termLine('💡 输入 "intel" 获取情报提示', 'dim');
+  termLine('💡 输入 "missions" 查看所有任务', 'dim');
+  termLine('', 'info');
+}
+
+// =====================================================================
+//  FILE SYSTEM HELPERS
+// =====================================================================
+function resolvePath(p) {
+  if (!p) return state.cwd;
+  if (p.startsWith('/')) {
+    // absolute
+    if (p === '~') return '/home/guest';
+    return normalizePath(p);
+  }
+  // relative
+  if (state.cwd === '/') return normalizePath('/' + p);
+  return normalizePath(state.cwd + '/' + p);
+}
+
+function normalizePath(p) {
+  const parts = p.split('/').filter(Boolean);
+  const stack = [];
+  for (const part of parts) {
+    if (part === '.') continue;
+    if (part === '..') stack.pop();
+    else stack.push(part);
+  }
+  return '/' + stack.join('/');
+}
+
+function addVirtualFile(path, content) {
+  FILESYSTEM[path] = { type: 'file', content };
+  // ensure parent dir exists in tree
+  const parent = path.substring(0, path.lastIndexOf('/'));
+  if (FILESYSTEM[parent] && FILESYSTEM[parent].children) {
+    const name = path.substring(path.lastIndexOf('/') + 1);
+    if (!FILESYSTEM[parent].children.includes(name)) {
+      FILESYSTEM[parent].children.push(name);
+    }
+  }
+  renderFileTree();
+}
+
+// =====================================================================
+//  RENDERING
+// =====================================================================
+function renderFileTree() {
+  const container = document.getElementById('file-tree');
+  container.innerHTML = '';
+  
+  function renderNode(path, depth = 0) {
+    const node = FILESYSTEM[path];
+    if (!node) return;
+    
+    if (node.type === 'dir') {
+      const dirItem = document.createElement('div');
+      dirItem.className = 'item folder';
+      dirItem.style.paddingLeft = (12 + depth * 16) + 'px';
+      dirItem.innerHTML = `<span class="icon">📁</span> ${path.split('/').pop() || '/'}`;
+      dirItem.onclick = () => {
+        state.cwd = path;
+        updatePrompt();
+        renderFileTree();
+      };
+      container.appendChild(dirItem);
+      
+      if (node.children) {
+        // Show children only for current path or root
+        const shouldExpand = path === state.cwd || path === '/' || state.cwd.startsWith(path + '/');
+        if (shouldExpand || depth < 1) {
+          node.children.forEach(child => {
+            const childPath = path === '/' ? '/' + child : path + '/' + child;
+            const childNode = FILESYSTEM[childPath];
+            if (childNode) {
+              if (childNode.type === 'dir') {
+                renderNode(childPath, depth + 1);
+              } else {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'item file' + (childPath === '/root/master.key' && state.user !== 'root' ? ' locked' : '');
+                fileItem.style.paddingLeft = (12 + (depth + 1) * 16) + 'px';
+                const icon = getFileIcon(child);
+                fileItem.innerHTML = `<span class="icon">${icon}</span> ${child}`;
+                fileItem.onclick = () => {
+                  if (childPath === '/root/master.key' && state.user !== 'root') {
+                    showNotif('需要 root 权限!', 'error');
+                    return;
+                  }
+                  // cat the file
+                  termCmdLine(`cat ${child}`);
+                  cmd_cat(['cat', child]);
+                };
+                container.appendChild(fileItem);
+              }
+            }
+          });
+        }
+      }
+    }
+  }
+  
+  renderNode('/', 0);
+}
+
+function getFileIcon(name) {
+  if (name.endsWith('.txt')) return '📄';
+  if (name.endsWith('.php')) return '🐘';
+  if (name.endsWith('.png') || name.endsWith('.jpg')) return '🖼';
+  if (name.endsWith('.zip') || name.endsWith('.tar.gz')) return '📦';
+  if (name.endsWith('.pcap')) return '📡';
+  if (name.endsWith('.img')) return '💿';
+  if (name.endsWith('.enc')) return '🔐';
+  if (name.endsWith('.kdbx')) return '🔑';
+  if (name.endsWith('.key') || name.endsWith('.pem') || name.endsWith('.rsa')) return '🗝';
+  if (name.endsWith('.sql')) return '🗄';
+  if (!name.includes('.')) return '⚙';
+  return '📄';
+}
+
+function renderMissions() {
+  const container = document.getElementById('mission-list');
+  container.innerHTML = '';
+  
+  state.missions.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'mission-card' + (m.id === state.currentMission ? ' active' : '');
+    
+    let statusIcon = '🔒';
+    if (m.status === 'done') statusIcon = '✅';
+    else if (m.status === 'active') statusIcon = '🔄';
+    
+    card.innerHTML = `
+      <div class="mc-title">
+        ${m.title}
+        <span class="mc-diff ${m.diff}">${m.diff.toUpperCase()}</span>
+      </div>
+      <div class="mc-desc">${m.desc.substring(0, 60)}...</div>
+      <div class="mc-status ${m.status === 'done' ? 'done' : (m.status === 'active' ? 'active-m' : 'locked')}">${statusIcon}</div>
+    `;
+    
+    if (m.status !== 'locked') {
+      card.onclick = () => setActiveMission(m.id);
+    }
+    container.appendChild(card);
+  });
+  
+  // Hint box
+  const current = state.missions.find(m => m.id === state.currentMission);
+  const hintBox = document.getElementById('hint-box');
+  if (current && current.status !== 'done') {
+    hintBox.style.display = 'block';
+    document.getElementById('hint-body').textContent = current.intel;
+  } else {
+    hintBox.style.display = 'none';
+  }
+  
+  // Mission count
+  const done = state.missions.filter(m => m.status === 'done').length;
+  document.getElementById('mission-count').textContent = `${done}/${state.missions.length}`;
+}
+
+// =====================================================================
+//  UI HELPERS
+// =====================================================================
+function updatePrompt() {
+  const prompt = document.getElementById('prompt');
+  prompt.innerHTML = `<span class="user">${state.user}</span><span class="at">@</span><span class="host">${state.host}</span><span class="path">:${state.cwd}$</span>`;
+}
+
+function updateTopBar() {
+  const m = state.missions.find(x => x.id === state.currentMission);
+  document.getElementById('top-mission').textContent = `MISSION: ${m ? m.title : '--'}`;
+  document.getElementById('top-score').textContent = `SCORE: ${state.score}`;
+  document.getElementById('top-user').textContent = `${state.user}@${state.host}`;
+}
+
+function startTimer() {
+  setInterval(() => {
+    const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+    const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+    const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+    const s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('top-time').textContent = `${h}:${m}:${s}`;
+  }, 1000);
+}
+
+function startSystemMonitor() {
+  setInterval(() => {
+    state.ram = 200 + Math.floor(Math.random() * 200);
+    state.cpu = 2 + Math.floor(Math.random() * 15);
+    state.netUp = Math.floor(Math.random() * 50);
+    state.netDown = Math.floor(Math.random() * 100);
+    document.getElementById('ram-usage').textContent = state.ram;
+    document.getElementById('cpu-usage').textContent = state.cpu;
+    document.getElementById('net-up').textContent = state.netUp;
+    document.getElementById('net-down').textContent = state.netDown;
+  }, 2000);
+}
+
+function showNotif(msg, type = 'info') {
+  const el = document.getElementById('notif');
+  el.className = `notif ${type} show`;
+  el.textContent = msg;
+  setTimeout(() => { el.classList.remove('show'); }, 4000);
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('show');
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+  if (tab === 'terminal') {
+    document.getElementById('terminal-container').style.display = 'flex';
+    document.getElementById('editor-view').style.display = 'none';
+  }
+}
+
+function closeEditor() {
+  switchTab('terminal');
+}
+
+function toggleHidden() {
+  state.hiddenVisible = !state.hiddenVisible;
+  renderFileTree();
+  termLine(`隐藏文件 ${state.hiddenVisible ? '可见' : '隐藏'}`, 'dim');
+}
+
+// =====================================================================
+//  EASTER EGGS & SECRETS
+// =====================================================================
+// Hidden file that appears with toggle
+FILESYSTEM['/home/guest/.bash_history'] = {
+  type: 'file',
+  content: `nmap -sn 10.0.0.0/24
+curl http://10.0.0.100
+ssh admin@10.0.0.100
+# remember: password is admin123
+# don't forget to check /backup.zip
+# keygen serial is 1337
+# master key for everything: flag{m4st3r_h4ck3r_2024}`
+};
+
+FILESYSTEM['/home/admin/'] = {
+  type: 'dir', children: ['.ssh', 'todo.txt']
+};
+FILESYSTEM['/home/admin/.ssh'] = {
+  type: 'dir', children: ['authorized_keys']
+};
+FILESYSTEM['/home/admin/.ssh/authorized_keys'] = {
+  type: 'file', content: `ssh-rsa AAAAB3NzaC1yc2E... admin@webserver
+# 备份密钥在 /home/guest/id_rsa_backup`
+};
+FILESYSTEM['/home/admin/todo.txt'] = {
+  type: 'file', content: `- [ ] 更改默认密码
+- [ ] 关闭3306端口
+- [ ] 删除/backup.zip
+- [ ] 修复SQL注入漏洞
+- [ ] 更新OpenSSH
+- [X] 安装fail2ban`
+};
+
+// Add hidden files to guest dir
+FILESYSTEM['/home/guest'].children.push('.bash_history', 'id_rsa_backup');
+FILESYSTEM['/home/guest/id_rsa_backup'] = {
+  type: 'file', content: `[RSA私钥备份 - 可用于ssh登录]`
+};
+
+// =====================================================================
+//  INITIALIZE
+// =====================================================================
+// Pre-compute mission references
+MISSIONS.forEach(m => {
+  m.originalDesc = m.desc;
+});
+
+// Start
+runBoot();
+
+// Focus input on any key
+document.addEventListener('keydown', (e) => {
+  if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    const input = document.getElementById('cmd-input');
+    if (document.activeElement !== input) {
+      input.focus();
+    }
+  }
+});
+
+// Konami code easter egg
+let konami = [];
+const konamiCode = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+document.addEventListener('keydown', (e) => {
+  konami.push(e.key);
+  if (konami.length > konamiCode.length) konami.shift();
+  if (konami.join(',') === konamiCode.join(',')) {
+    termLine('🎮 KONAMI CODE ACTIVATED!', 'success');
+    termLine('上帝模式已启用 (仅限本模拟器)', 'warn');
+    termLine('所有命令无限制, 但真正的黑客靠实力不是作弊 ;)', 'purple');
+    state.user = 'root';
+    state.host = 'nexus-godmode';
+    updatePrompt();
+    konami = [];
+  }
+});
+
+// Periodic ambient messages
+setInterval(() => {
+  if (Math.random() < 0.15) {
+    const msgs = [
+      { text: '[防火墙] 检测到端口扫描 - 来源: 10.0.0.50', cls: 'warn' },
+      { text: '[系统] 自动备份完成 - /var/backups/daily_0715.tar.gz', cls: 'dim' },
+      { text: '[安全] SSH 登录失败次数: 3 (来自 192.168.1.100)', cls: 'err' },
+      { text: '[网络] 带宽使用率: 23% - 正常', cls: 'dim' },
+      { text: '[提醒] 输入 "intel" 获取当前任务提示', cls: 'cyan' },
+      { text: '[系统] 新的CVE公告: CVE-2024-XXXXX 已发布', cls: 'warn' },
+    ];
+    const m = msgs[Math.floor(Math.random() * msgs.length)];
+    termLine(m.text, m.cls);
+  }
+}, 12000);
+
+</script>
+</body>
+</html>
